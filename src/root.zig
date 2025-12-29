@@ -1,0 +1,18 @@
+//! By convention, root.zig is the root source file for a Zig library
+const std = @import("std");
+const types = @import("core/types.zig");
+
+pub const vec = @import("core/vec.zig");
+pub const mat = @import("core/mat.zig");
+pub const cholesky = @import("linalg/cholesky.zig");
+pub const gaussJordan = @import("linalg/gaussjordan.zig");
+pub const Vec = vec.Vec;
+pub const Mat = mat.Mat;
+
+test {
+    _ = @import("core/vec.zig");
+    _ = @import("core/mat.zig");
+    _ = @import("linalg/cholesky.zig");
+    _ = @import("linalg/gaussjordan.zig");
+    _ = @import("signal/lti_conversion.zig");
+}
