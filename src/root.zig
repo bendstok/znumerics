@@ -1,6 +1,5 @@
 //! By convention, root.zig is the root source file for a Zig library
 const std = @import("std");
-const types = @import("core/types.zig");
 
 pub const vec = @import("core/vec.zig");
 pub const mat = @import("core/mat.zig");

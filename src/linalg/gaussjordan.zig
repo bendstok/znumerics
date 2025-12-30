@@ -1,17 +1,16 @@
 const std = @import("std");
 const mat = @import("../core/mat.zig");
-const types = @import("../core/types.zig");
 const vec = @import("../core/vec.zig");
+const err_mod = @import("../error.zig");
 
 const Vec = vec.Vec;
 const Mat = mat.Mat;
 
 pub const GaussJordanError = error{
-    BadShape,
     FreeVariable,
     Unsolvable,
     Singular,
-};
+} || err_mod.Common;
 
 /// Solves Ax = b, returns vector x.
 ///

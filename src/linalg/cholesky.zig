@@ -1,12 +1,8 @@
 const std = @import("std");
 const mat = @import("../core/mat.zig");
-const types = @import("../core/types.zig");
+const err_mod = @import("../error.zig");
 
 const Mat = mat.Mat;
-
-pub const CholeskyError = error{
-    BadShape,
-};
 
 /// Returns the lower diagonal of the decomposition.
 /// For a real matrix, A = L * L^T.
@@ -17,7 +13,7 @@ pub const CholeskyError = error{
 // TODO: This might also fail if the matrix is not
 // Hermitian positive-definite!
 pub fn cholesky(alloc: std.mem.Allocator, matrix: Mat) !Mat {
-    if (matrix.cols != matrix.rows) return CholeskyError.BadShape;
+    if (matrix.cols != matrix.rows) return err_mod.Common.BadShape;
     var i: usize = 0;
     var L = try Mat.initZero(alloc, matrix.rows, matrix.cols);
     errdefer L.deinit();

@@ -1,20 +1,17 @@
 const std = @import("std");
-const types = @import("types.zig");
 const vec = @import("vec.zig");
 const gj = @import("../linalg/gaussjordan.zig");
+const err_mod = @import("../error.zig");
 
 const Vec = vec.Vec;
 
 pub const MatError = error{
-    BadShape,
-    SizeMismatch,
     Empty,
-    IndexOutOfBounds,
-};
+} || err_mod.Common;
 
 pub const InverseError = error{
     Singular,
-};
+} || err_mod.Common;
 
 /// The Matrix type.
 /// The data is stored as row vectors.

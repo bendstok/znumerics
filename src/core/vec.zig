@@ -1,16 +1,10 @@
 const std = @import("std");
-const types = @import("types.zig");
-const Complex = types.Complex;
 const mat = @import("mat.zig");
+const err_mod = @import("../error.zig");
 
 pub const VecError = error{
-    IndexOutOfBounds,
-    SizeMismatch,
     EmptyVector,
-    FailedInit,
-    TypeMismatch,
-    BadShape,
-};
+} || err_mod.Common;
 
 /// The vector type.
 /// Note that all vectors are presumed row vectors.
@@ -25,9 +19,9 @@ pub const Vec = struct {
         if (size == 0) {
             return VecError.EmptyVector;
         }
-        const data = alloc.alloc(f64, size) catch |err| {
-            return err;
-        };
+        const data = try alloc.alloc(f64, size);
+        errdefer alloc.free(data);
+
         return .{ .alloc = alloc, .data = @constCast(data), .colvec = colvec };
     }
 
@@ -35,9 +29,9 @@ pub const Vec = struct {
         if (size == 0) {
             return VecError.EmptyVector;
         }
-        const data = alloc.alloc(f64, size) catch |err| {
-            return err;
-        };
+        const data = try alloc.alloc(f64, size);
+        errdefer alloc.free(data);
+
         @memset(data, 0);
         return .{ .alloc = alloc, .data = data, .colvec = colvec };
     }
@@ -204,6 +198,30 @@ pub const Vec = struct {
             @memset(self.data[old_len..], fill);
         }
     }
+
+    /// Add in place
+    ///
+    /// X = X + Y
+    ///
+    /// Only takes vectors of same size.
+    pub fn addInPlace(self: Vec, ToAdd: Vec) !void {
+        if (self.len() != ToAdd.len()) return VecError.SizeMismatch;
+        for (0..self.len()) |idx| {
+            self.setUnsafe(idx, self.atUnsafe(idx) + ToAdd.at(idx));
+        }
+    }
+
+    /// Subtract in place
+    ///
+    /// X = X - Y
+    ///
+    /// Only takes vectors of same size.
+    pub fn subInPlace(self: Vec, toSub: Vec) !void {
+        if (self.len() != toSub.len()) return VecError.SizeMismatch;
+        for (0..self.len()) |idx| {
+            self.setUnsafe(idx, self.atUnsafe(idx) - toSub.at(idx));
+        }
+    }
 };
 
 /// Multiplies two vectors, where the left one has to be a coloumn vector.
@@ -215,6 +233,8 @@ pub fn vecMult(alloc: std.mem.Allocator, left: Vec, right: Vec) !mat.Mat {
     if (!left.colvec) return VecError.BadShape;
     if (left.len() != right.len()) return VecError.SizeMismatch;
     var returnMat = try mat.Mat.initZero(alloc, left.len(), left.len());
+    errdefer returnMat.deinit();
+
     // This will always be a square matrix so which vec decides the iterator is arbitrary
     // Its set as this for ease of thinking
     for (0..left.len()) |r| {
@@ -238,6 +258,43 @@ pub fn crossProd3d(alloc: std.mem.Allocator, left: Vec, right: Vec) !Vec {
     retVec.setUnsafe(0, s1);
     retVec.setUnsafe(1, s2);
     retVec.setUnsafe(2, s3);
+    return retVec;
+}
+
+/// Similar to np.linspace
+///
+/// Returns a Vec that contains all the steps from 'start' to 'end'.
+///
+/// Always includes start value. If 'includeEndPoint' is true,
+/// the last value will be 'end'. Otherwise it the range will be
+/// [start,end).
+///
+/// Does not support:
+/// - start == end
+/// - steps == 0
+pub fn linspace(alloc: std.mem.Allocator, start: f64, end: f64, steps: usize, includeEndPoint: bool) !Vec {
+    if (steps == 0) return VecError.BadShape;
+
+    var retVec = try Vec.initZero(alloc, steps, false);
+    errdefer retVec.deinit();
+    if (steps == 1) {
+        retVec.setUnsafe(0, start);
+        return retVec;
+    }
+
+    var denom: f64 = 0.0;
+    if (includeEndPoint) {
+        denom = @as(f64, @floatFromInt(steps - 1));
+    } else {
+        denom = @as(f64, @floatFromInt(steps));
+    }
+
+    const stepVal = (end - start) / denom;
+
+    for (0..steps) |s| {
+        retVec.setUnsafe(s, start + @as(f64, @floatFromInt(s)) * stepVal);
+    }
+
     return retVec;
 }
 
@@ -418,6 +475,33 @@ test "vecMult: OOM at various allocation points does not leak" {
         } else |e| {
             // vecMult can also fail with BadShape/SizeMismatch, but here it should mostly be OOM.
             try std.testing.expect(e == error.OutOfMemory or e == VecError.BadShape or e == VecError.SizeMismatch);
+        }
+    }
+}
+
+test "linspace: Test OOM and proper behaviour" {
+    for (0..50) |fail_index| {
+        var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const alloc = fa.allocator();
+
+        const ls = linspace(alloc, 0.0, 10.0, 10, false);
+        if (ls) |lin| {
+            var k = lin;
+            defer k.deinit();
+            try std.testing.expect(lin.len() == 10);
+            try std.testing.expect(lin.atUnsafe(0) == 0.0);
+        } else |e| {
+            try std.testing.expect(e == error.OutOfMemory);
+        }
+        const ls2 = linspace(alloc, 0.0, 10.0, 10, true);
+        if (ls2) |lin2| {
+            var k = lin2;
+            defer k.deinit();
+            try std.testing.expect(lin2.len() == 10);
+            try std.testing.expect(lin2.atUnsafe(0) == 0.0);
+            try std.testing.expect(lin2.atUnsafe(lin2.len() - 1) == 10.0);
+        } else |e| {
+            try std.testing.expect(e == error.OutOfMemory);
         }
     }
 }

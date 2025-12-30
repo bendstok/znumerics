@@ -1,18 +1,16 @@
 const std = @import("std");
 const mat = @import("../core/mat.zig");
-const types = @import("../core/types.zig");
 const vec = @import("../core/vec.zig");
+const err_mod = @import("../error.zig");
 
 const Vec = vec.Vec;
 const Mat = mat.Mat;
 
 pub const LTIError = error{
-    BadShape,
     DenominatorLeadingZero,
     AlreadyDiscrete,
     AlreadyContinuous,
-    IndexOutOfBounds,
-};
+} || err_mod.Common;
 
 pub const LTIDomain = enum { Continuous, Discrete };
 
