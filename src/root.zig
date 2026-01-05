@@ -5,6 +5,7 @@ pub const vec = @import("core/vec.zig");
 pub const mat = @import("core/mat.zig");
 pub const cholesky = @import("linalg/cholesky.zig");
 pub const gaussJordan = @import("linalg/gaussjordan.zig");
+pub const QR = @import("linalg/qrdecomposition.zig");
 pub const Vec = vec.Vec;
 pub const Mat = mat.Mat;
 
@@ -14,4 +15,5 @@ test {
     _ = @import("linalg/cholesky.zig");
     _ = @import("linalg/gaussjordan.zig");
     _ = @import("signal/lti_conversion.zig");
+    _ = @import("linalg/qrdecomposition.zig");
 }

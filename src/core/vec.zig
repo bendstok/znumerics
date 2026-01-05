@@ -2,9 +2,7 @@ const std = @import("std");
 const mat = @import("mat.zig");
 const err_mod = @import("../error.zig");
 
-pub const VecError = error{
-    EmptyVector,
-} || err_mod.Common;
+pub const VecError = error{} || err_mod.Common;
 
 /// The vector type.
 /// Note that all vectors are presumed row vectors.
@@ -17,7 +15,7 @@ pub const Vec = struct {
 
     pub fn init(alloc: std.mem.Allocator, size: usize, colvec: bool) !Vec {
         if (size == 0) {
-            return VecError.EmptyVector;
+            return VecError.Empty;
         }
         const data = try alloc.alloc(f64, size);
         errdefer alloc.free(data);
@@ -27,7 +25,7 @@ pub const Vec = struct {
 
     pub fn initZero(alloc: std.mem.Allocator, size: usize, colvec: bool) !Vec {
         if (size == 0) {
-            return VecError.EmptyVector;
+            return VecError.Empty;
         }
         const data = try alloc.alloc(f64, size);
         errdefer alloc.free(data);
@@ -52,7 +50,7 @@ pub const Vec = struct {
     pub fn norm(self: Vec) f64 {
         var sum: f64 = 0.0;
         for (self.data) |d| {
-            sum += d ** 2;
+            sum += std.math.pow(f64, d, 2);
         }
         sum = std.math.sqrt(sum);
         return sum;
@@ -174,7 +172,7 @@ pub const Vec = struct {
     pub fn printVec(self: Vec) !void {
         for (0..self.len()) |idx| {
             //std.debug.print("c={}", .{c});
-            const val: f64 = try self.atSafe(idx);
+            const val: f64 = try self.at(idx);
             var tmp: [64]u8 = undefined;
             const s = try std.fmt.bufPrint(&tmp, "{:.3}", .{val});
             std.debug.print("{s: >10} ", .{s});
@@ -185,14 +183,13 @@ pub const Vec = struct {
 
     /// Expands the vector, and fills the new space with 'fill'.
     ///
-    /// Returns an error.OutOfMemory or VecError.EmptyVector (if new_len == 0) on failure.
+    /// Returns an error.OutOfMemory or VecError.Empty (if new_len == 0) on failure.
     pub fn resize(self: *Vec, new_len: usize, fill: f64) !void {
-        if (new_len == 0) return VecError.EmptyVector;
+        if (new_len == 0) return VecError.Empty;
         if (new_len == self.data.len) return;
         const old_len = self.len();
-        self.data = self.alloc.realloc(self.data, new_len) catch |err| {
-            return err;
-        };
+        self.data = try self.alloc.realloc(self.data, new_len);
+        errdefer self.deinit();
 
         if (new_len > old_len) {
             @memset(self.data[old_len..], fill);

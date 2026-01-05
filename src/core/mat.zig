@@ -210,15 +210,15 @@ pub const Mat = struct {
     ///
     /// Returns a MatError.BadShape on failure.
     // TODO: Update this, we can now expand the matrix easily.
-    pub fn transposeInPlace(self: Mat) MatError!void {
+    pub fn transposeInPlace(self: Mat) (MatError || err_mod.Common)!void {
         if (self.rows != self.cols) return MatError.BadShape;
 
         for (0..self.rows) |r| {
             for (r + 1..self.cols) |c| {
                 const s1 = try self.at(r, c);
                 const s2 = try self.at(c, r);
-                self.set(r, c, s2);
-                self.set(c, r, s1);
+                try self.set(r, c, s2);
+                try self.set(c, r, s1);
             }
         }
     }

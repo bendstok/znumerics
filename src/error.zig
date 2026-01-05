@@ -5,4 +5,5 @@ pub const Common = error{
     SizeMismatch,
     FailedInit,
     TypeMismatch,
+    Empty,
 };
