@@ -578,7 +578,7 @@ pub fn inverse(alloc: std.mem.Allocator, A: Mat) !Mat {
 ///
 /// Returns an MatError.Sizemismatch on failure.
 pub fn matMult(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
-    if (left.rows != right.cols) return MatError.SizeMismatch;
+    if (left.cols != right.rows) return MatError.SizeMismatch;
     var retMat: Mat = try Mat.initZero(alloc, left.rows, right.cols);
     // In case of error, we need to deinit the matrix
     errdefer retMat.deinit();
@@ -592,6 +592,56 @@ pub fn matMult(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
                 val += (try left.at(r, k)) * (try right.at(k, c));
             }
             try retMat.set(r, c, val);
+        }
+    }
+    return retMat;
+}
+
+/// Multiplies the two matrices by each other.
+///
+/// Returns an MatError.Sizemismatch on failure.
+pub fn matMultSIMD(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
+    if (left.rows != right.cols) return MatError.SizeMismatch;
+    var retMat: Mat = try Mat.initZero(alloc, left.rows, right.cols);
+    // In case of error, we need to deinit the matrix
+    errdefer retMat.deinit();
+
+    const vec_len: usize = 8;
+
+    // Coloumns become rows so we can access them in a loop
+    var rightT = try transpose(right, alloc);
+    defer rightT.deinit();
+
+    const n = left.cols;
+    const simd_n = (n / vec_len) * vec_len;
+
+    for (0..left.rows) |r| {
+        for (0..right.cols) |c| {
+            var accumulator = @Vector(vec_len, f64){ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+
+            var k: usize = 0;
+            while (k < simd_n) : (k += vec_len) {
+                var a = @Vector(vec_len, f64){ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+                var b = @Vector(vec_len, f64){ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+
+                inline for (0..vec_len) |lane| {
+                    a[lane] = left.atUnsafe(r, k + lane);
+                    b[lane] = rightT.atUnsafe(c, k + lane);
+                }
+
+                accumulator += a * b;
+            }
+            // Horizontal sum of SIMD accumulator
+            var sum: f64 = 0.0;
+            inline for (0..vec_len) |lane| {
+                sum += accumulator[lane];
+            }
+            // Tail
+            while (k < n) : (k += 1) {
+                sum += left.atUnsafe(r, k) * rightT.atUnsafe(c, k);
+            }
+
+            retMat.setUnsafe(r, c, sum);
         }
     }
     return retMat;
@@ -1242,106 +1292,4 @@ test "expm: OOM at various allocation points does not leak" {
             try std.testing.expect(e == error.OutOfMemory or e == MatError.BadShape or e == MatError.SizeMismatch);
         }
     }
-}
-
-fn fillDeterministic(m: *Mat) void {
-    // Deterministic, non-trivial values (no RNG needed)
-    for (0..m.rows) |i| {
-        for (0..m.cols) |j| {
-            const v = @as(f64, @floatFromInt((i * 131 + j * 17) % 1000)) * 0.001;
-            m.setUnsafe(i, j, v);
-        }
-    }
-}
-
-fn checksum(m: Mat) f64 {
-    // Cheap checksum so results get "used"
-    var s: f64 = 0.0;
-    for (0..m.rows) |i| {
-        for (0..m.cols) |j| {
-            s += m.atUnsafe(i, j);
-        }
-    }
-    return s;
-}
-
-test "Mat.add vs Mat.addSIMD benchmark (large matrices)" {
-    const alloc = std.testing.allocator;
-
-    const R: usize = 512;
-    const C: usize = 512;
-
-    var A = try Mat.initZero(alloc, R, C);
-    defer A.deinit();
-    var B = try Mat.initZero(alloc, R, C);
-    defer B.deinit();
-
-    fillDeterministic(&A);
-    fillDeterministic(&B);
-
-    // Choose iterations so total runtime is measurable.
-    const iters: usize = 10;
-
-    // Warmup (helps stabilize clocks/caches/JIT-ish effects)
-    {
-        var k: usize = 0;
-        while (k < 10) : (k += 1) {
-            var tmp = try A.add(B);
-            std.mem.doNotOptimizeAway(checksum(tmp));
-            tmp.deinit();
-
-            var tmp2 = try A.addSIMD(B);
-            std.mem.doNotOptimizeAway(checksum(tmp2));
-            tmp2.deinit();
-        }
-    }
-
-    // --- time add() ---
-    var timer_add = try std.time.Timer.start();
-    var sum_add: f64 = 0.0;
-
-    {
-        var k: usize = 0;
-        while (k < iters) : (k += 1) {
-            var tmp = try A.add(B);
-            sum_add += checksum(tmp);
-            tmp.deinit();
-        }
-    }
-
-    const ns_add = timer_add.read();
-    std.mem.doNotOptimizeAway(sum_add);
-
-    // --- time addSIMD() ---
-    var timer_simd = try std.time.Timer.start();
-    var sum_simd: f64 = 0.0;
-
-    {
-        var k: usize = 0;
-        while (k < iters) : (k += 1) {
-            var tmp = try A.addSIMD(B);
-            sum_simd += checksum(tmp);
-            tmp.deinit();
-        }
-    }
-
-    const ns_simd = timer_simd.read();
-    std.mem.doNotOptimizeAway(sum_simd);
-
-    // Sanity: results should match (within floating error; here they should be exact)
-    try std.testing.expectApproxEqAbs(sum_add, sum_simd, 0.0);
-
-    const add_per_iter = @as(f64, @floatFromInt(ns_add)) / @as(f64, @floatFromInt(iters));
-    const simd_per_iter = @as(f64, @floatFromInt(ns_simd)) / @as(f64, @floatFromInt(iters));
-
-    std.debug.print(
-        "\n[bench] Mat {d}x{d}, iters={d}\n  add     : {d} ns total, {d} ns/iter\n  addSIMD : {d} ns total, {d} ns/iter\n  speedup : {d}x\n",
-        .{
-            R,             C,                            iters,
-            ns_add,        add_per_iter,                 ns_simd,
-            simd_per_iter, add_per_iter / simd_per_iter,
-        },
-    );
-
-    // NOTE: Do NOT assert on speed here; it will be platform/CPU dependent and flaky in CI.
 }

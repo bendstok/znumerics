@@ -31,6 +31,21 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Benchmarks for SIMD
+    const benchmark_step = b.step("benchmark", "Run SIMD benchmarks");
+    const benchmark_example = b.addExecutable(.{
+        .name = "benchmark",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("benchmarks/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    benchmark_example.root_module.addImport("znumerics", mod);
+    const run_benchmark_example = b.addRunArtifact(benchmark_example);
+    benchmark_step.dependOn(&run_benchmark_example.step);
+
     mat_example.root_module.addImport("znumerics", mod);
     const run_mat_example = b.addRunArtifact(mat_example);
     example_step.dependOn(&run_mat_example.step);
