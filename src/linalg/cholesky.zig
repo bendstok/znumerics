@@ -9,7 +9,7 @@ const Mat = mat.Mat;
 ///
 /// Uses the Cholesky–Banachiewicz algorithm.
 ///
-/// Returns an CholeskyError.BadShape if the matrix is not square.
+/// Returns an BadShape error if the matrix is not square.
 // TODO: This might also fail if the matrix is not
 // Hermitian positive-definite!
 pub fn cholesky(alloc: std.mem.Allocator, matrix: Mat) !Mat {
