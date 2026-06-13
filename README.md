@@ -1,7 +1,7 @@
 Hobby project for numerical computing in Zig
 
 ## Requirements
-Zig >= 0.15.2
+Only tested for Zig 0.16
 
 ## Use as a dependency
 ```sh
