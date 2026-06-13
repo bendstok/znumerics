@@ -5,7 +5,7 @@ Zig >= 0.15.2
 
 ## Use as a dependency
 ```sh
-zig fetch --save git+https://github.com/<you>/znumerics
+zig fetch --save git+https://github.com/bendstok/znumerics
 ```
 ```zig
 // build.zig
