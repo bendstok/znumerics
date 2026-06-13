@@ -9,7 +9,7 @@ pub const cholesky = @import("linalg/cholesky.zig");
 pub const gaussJordan = @import("linalg/gaussjordan.zig");
 pub const QR = @import("linalg/qrdecomposition.zig");
 pub const signal = @import("signal/lti_conversion.zig");
-pub const control = @import("controller/pid.zig");
+pub const control = @import("control/pid.zig");
 pub const ode = @import("ode/runge_kutta.zig");
 
 // Convenience re-export
