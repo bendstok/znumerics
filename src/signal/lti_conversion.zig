@@ -39,7 +39,7 @@ pub const StateSpace = struct {
     /// Inits all the members to zero, size n.
     ///
     /// Note that dt = 0.0
-    pub fn initContinous(alloc: std.mem.Allocator, n: usize) !StateSpace {
+    pub fn initContinuous(alloc: std.mem.Allocator, n: usize) !StateSpace {
         var A = try Mat.initZero(alloc, n, n);
         errdefer A.deinit();
         var B = try Vec.initZero(alloc, n, true);
@@ -217,7 +217,7 @@ pub fn tf2ss(alloc: std.mem.Allocator, num: []const f64, den: []const f64) !Stat
     // Although we SHOULD only need it for the simple loop.
 
     const n = k - 1;
-    var SS = try StateSpace.initContinous(alloc, n);
+    var SS = try StateSpace.initContinuous(alloc, n);
     const den0 = den[0];
 
     const has_D = (numP.len == den.len);
@@ -459,7 +459,7 @@ test "cont2discrete: dt = 0 yields identity A and zero B, C/D copied" {
     const alloc = std.testing.allocator;
 
     // Build a simple 2x2 continuous SS
-    var SS = try StateSpace.initContinous(alloc, 2);
+    var SS = try StateSpace.initContinuous(alloc, 2);
     defer SS.deinit();
 
     // A = [[-5, -6], [1, 0]], B = [1, 0], C = [1, 3], D = [0]
@@ -496,7 +496,7 @@ test "cont2discrete: 1st-order known result via expm block extraction" {
 
     // Continuous: x' = a x + b u, y = c x + d u
     // a = -2, b = 3, c = 4, d = 0, dt = 0.1
-    var SS = try StateSpace.initContinous(alloc, 1);
+    var SS = try StateSpace.initContinuous(alloc, 1);
     defer SS.deinit();
 
     try SS.A.set(0, 0, -2.0);
@@ -634,7 +634,7 @@ test "cont2discrete: OOM at various allocation points does not leak" {
         var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
         const alloc = fa.allocator();
 
-        var SS = StateSpace.initContinous(alloc, 2) catch |e| {
+        var SS = StateSpace.initContinuous(alloc, 2) catch |e| {
             try std.testing.expect(e == error.OutOfMemory);
             continue;
         };

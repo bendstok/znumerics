@@ -171,7 +171,7 @@ pub fn matMulvsSIMDmatMul(alloc: std.mem.Allocator) !void {
     const simd_per_iter = @as(f64, @floatFromInt(ns_simd)) / @as(f64, @floatFromInt(iters));
 
     std.debug.print(
-        "\n[bench] matmul {d}x{d} * {d}x{d}, iters={d}\n  matMult : {d} ns total, {d} ns/iter\n  matMultSIMD   : {d} ns total, {d} ns/iter\n  speedup: {d}x\n",
+        "\n[bench] matmul {d}x{d} * {d}x{d}, iters={d}\n  matMult      : {d} ns total, {d} ns/iter\n  matMultSIMD  : {d} ns total, {d} ns/iter\n  speedup      : {d}x\n",
         .{
             N,         N,               N,       N,             iters,
             ns_scalar, scalar_per_iter, ns_simd, simd_per_iter, scalar_per_iter / simd_per_iter,
