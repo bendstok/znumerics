@@ -24,7 +24,7 @@ fn checksum(m: Mat) f64 {
     return s;
 }
 
-pub fn matAddvsSIMDadd(alloc: std.mem.Allocator) !void {
+pub fn matAddvsSIMDadd(alloc: std.mem.Allocator, io: std.Io) !void {
     const R: usize = 512;
     const C: usize = 512;
 
@@ -54,7 +54,7 @@ pub fn matAddvsSIMDadd(alloc: std.mem.Allocator) !void {
     }
 
     // --- time add() ---
-    var timer_add = try std.time.Timer.start();
+    const timer_add_start = std.Io.Timestamp.now(io, .awake);
     var sum_add: f64 = 0.0;
 
     {
@@ -66,11 +66,11 @@ pub fn matAddvsSIMDadd(alloc: std.mem.Allocator) !void {
         }
     }
 
-    const ns_add = timer_add.read();
+    const ns_add: u64 = @intCast(timer_add_start.untilNow(io, .awake).toNanoseconds());
     std.mem.doNotOptimizeAway(sum_add);
 
     // --- time addSIMD() ---
-    var timer_simd = try std.time.Timer.start();
+    const timer_simd_start = std.Io.Timestamp.now(io, .awake);
     var sum_simd: f64 = 0.0;
 
     {
@@ -82,7 +82,7 @@ pub fn matAddvsSIMDadd(alloc: std.mem.Allocator) !void {
         }
     }
 
-    const ns_simd = timer_simd.read();
+    const ns_simd: u64 = @intCast(timer_simd_start.untilNow(io, .awake).toNanoseconds());
     std.mem.doNotOptimizeAway(sum_simd);
 
     // Sanity: results should match (within floating error; here they should be exact)
@@ -101,7 +101,7 @@ pub fn matAddvsSIMDadd(alloc: std.mem.Allocator) !void {
     );
 }
 
-pub fn matMulvsSIMDmatMul(alloc: std.mem.Allocator) !void {
+pub fn matMulvsSIMDmatMul(alloc: std.mem.Allocator, io: std.Io) !void {
 
     // Pick square sizes for simplicity
     // (m x n) * (n x p)
@@ -131,7 +131,7 @@ pub fn matMulvsSIMDmatMul(alloc: std.mem.Allocator) !void {
     }
 
     // --- time scalar matmul ---
-    var t_scalar = try std.time.Timer.start();
+    const t_scalar_start = std.Io.Timestamp.now(io, .awake);
     var sum_scalar: f64 = 0.0;
 
     {
@@ -143,11 +143,11 @@ pub fn matMulvsSIMDmatMul(alloc: std.mem.Allocator) !void {
         }
     }
 
-    const ns_scalar = t_scalar.read();
+    const ns_scalar: u64 = @intCast(t_scalar_start.untilNow(io, .awake).toNanoseconds());
     std.mem.doNotOptimizeAway(sum_scalar);
 
     // --- time SIMD matmul ---
-    var t_simd = try std.time.Timer.start();
+    const t_simd_start = std.Io.Timestamp.now(io, .awake);
     var sum_simd: f64 = 0.0;
 
     {
@@ -159,7 +159,7 @@ pub fn matMulvsSIMDmatMul(alloc: std.mem.Allocator) !void {
         }
     }
 
-    const ns_simd = t_simd.read();
+    const ns_simd: u64 = @intCast(t_simd_start.untilNow(io, .awake).toNanoseconds());
     std.mem.doNotOptimizeAway(sum_simd);
 
     // Sanity: checksums should match closely.

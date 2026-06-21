@@ -11,6 +11,7 @@ pub const QR = @import("linalg/qrdecomposition.zig");
 pub const signal = @import("signal/lti_conversion.zig");
 pub const control = @import("control/pid.zig");
 pub const ode = @import("ode/runge_kutta.zig");
+pub const eigen = @import("linalg/eigen.zig");
 
 // Convenience re-export
 pub const Vec = vec.Vec;
@@ -18,6 +19,7 @@ pub const Mat = mat.Mat;
 pub const StateSpace = signal.StateSpace;
 pub const PID = control.PID_DEO_Sim;
 pub const RK4 = ode.RK4;
+pub const eigenvalues = eigen.eigenvalues;
 
 test {
     _ = @import("core/vec.zig");
@@ -27,4 +29,5 @@ test {
     _ = @import("signal/lti_conversion.zig");
     _ = @import("linalg/qrdecomposition.zig");
     _ = @import("ode/runge_kutta.zig");
+    _ = @import("linalg/eigen.zig");
 }

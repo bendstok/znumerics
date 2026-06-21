@@ -4,11 +4,10 @@ const matbench = @import("mat.zig");
 const Mat = znum.Mat; // This is done for convenience
 const MatOp = znum.mat;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.gpa;
+    const io = init.io;
 
-    try matbench.matAddvsSIMDadd(alloc);
-    try matbench.matMulvsSIMDmatMul(alloc);
+    try matbench.matAddvsSIMDadd(alloc, io);
+    try matbench.matMulvsSIMDmatMul(alloc, io);
 }

@@ -35,20 +35,22 @@ pub fn qrDecomposition(alloc: std.mem.Allocator, A: Mat) ![2]Mat {
 
     var R = try Mat.initZero(alloc, m, m);
     errdefer R.deinit();
+    var work = try A.clone();
+    defer work.deinit();
 
     for (0..m - 1) |i| {
         var ai = try Vec.initZero(alloc, m, true);
         defer ai.deinit();
         // Set a to be the coloumn vector
         for (i..m) |v_i| {
-            ai.setUnsafe(v_i, A.atUnsafe(v_i, i));
+            ai.setUnsafe(v_i, work.atUnsafe(v_i, i));
         }
         // ||a_i|| * e_i == [zeros_0->i-1, alfa_i, zeros_i+1->m] ^ T
         var ei = try Vec.initZero(alloc, m, true);
         defer ei.deinit();
         ei.setUnsafe(i, 1);
 
-        const alfa = ai.norm();
+        const alfa: f64 = if (ai.atUnsafe(i) >= 0) -ai.norm() else ai.norm();
 
         ei.multConst(alfa);
 
@@ -80,6 +82,10 @@ pub fn qrDecomposition(alloc: std.mem.Allocator, A: Mat) ![2]Mat {
         try Mat.subInPlace(I, v_v);
 
         try mat.copyMat(I, Q_vec[i]);
+        var work_next = try mat.matMult(alloc, I, work);
+        work_next.setUnsafe(0, 0, work_next.atUnsafe(0, 0));
+        work.deinit();
+        work = work_next;
     }
 
     // Idea:

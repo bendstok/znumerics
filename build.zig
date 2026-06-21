@@ -49,4 +49,16 @@ pub fn build(b: *std.Build) void {
     mat_example.root_module.addImport("znumerics", mod);
     const run_mat_example = b.addRunArtifact(mat_example);
     example_step.dependOn(&run_mat_example.step);
+
+    const eig_example = b.addExecutable(.{
+        .name = "eigenvalues",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/eigenvalues.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    eig_example.root_module.addImport("znumerics", mod);
+    const run_eig_example = b.addRunArtifact(eig_example);
+    example_step.dependOn(&run_eig_example.step);
 }

@@ -56,6 +56,16 @@ pub const Vec = struct {
         return sum;
     }
 
+    /// Normalizes the vector using the Euclidean norm.
+    pub fn normalize(self: Vec) void {
+        const n = self.norm();
+        for (0..self.len()) |i| {
+            var d = self.atUnsafe(i);
+            d = d / n;
+            self.setUnsafe(i, d);
+        }
+    }
+
     /// Returns the value currently stored at idx.
     pub fn atUnsafe(self: Vec, idx: usize) f64 {
         return self.data[idx];
@@ -216,7 +226,7 @@ pub const Vec = struct {
     pub fn subInPlace(self: Vec, toSub: Vec) !void {
         if (self.len() != toSub.len()) return VecError.SizeMismatch;
         for (0..self.len()) |idx| {
-            self.setUnsafe(idx, self.atUnsafe(idx) - toSub.at(idx));
+            self.setUnsafe(idx, self.atUnsafe(idx) - toSub.atUnsafe(idx));
         }
     }
 };

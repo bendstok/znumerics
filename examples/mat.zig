@@ -3,7 +3,7 @@ const znum = @import("znumerics");
 const Mat = znum.Mat; // This is done for convenience
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

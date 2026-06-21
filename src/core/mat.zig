@@ -143,6 +143,30 @@ pub const Mat = struct {
         try self.data[row].setAll(new_values);
     }
 
+    /// Returns the row as a Vec. No bounds checks on inputted row.
+    ///
+    /// Deep copies.
+    pub fn getRow(self: Mat, row: usize, alloc: std.mem.Allocator) Vec {
+        var ret_vec = try Vec.initZero(alloc, self.cols, false);
+        errdefer ret_vec.deinit();
+        for (0..self.cols) |j| {
+            ret_vec.setUnsafe(j, self.atUnsafe(row, j));
+        }
+        return ret_vec;
+    }
+
+    /// Returns the col as a Vec. No bounds checks on inputted col.
+    ///
+    /// Deep copies.
+    pub fn getCol(self: Mat, col: usize, alloc: std.mem.Allocator) !Vec {
+        var ret_vec = try Vec.initZero(alloc, self.rows, true);
+        errdefer ret_vec.deinit();
+        for (0..self.rows) |i| {
+            ret_vec.setUnsafe(i, self.atUnsafe(i, col));
+        }
+        return ret_vec;
+    }
+
     /// Sets all values in a coloumn to the values in 'new_values'.
     ///
     /// Checks underlying type of pointers and arrays and does bound checks.
@@ -597,6 +621,18 @@ pub fn matMult(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
     return retMat;
 }
 
+/// A (mxn) * x (n) -> out (mx1)
+pub fn matVec(alloc: std.mem.Allocator, A: Mat, x: Vec) !Vec {
+    if (A.cols != x.len()) return err_mod.Common.SizeMismatch;
+    var out = try Vec.initZero(alloc, A.rows, true);
+    for (0..A.rows) |i| {
+        var s: f64 = 0;
+        for (0..A.cols) |j| s += A.atUnsafe(i, j) * x.atUnsafe(j);
+        out.setUnsafe(i, s);
+    }
+    return out;
+}
+
 /// Multiplies the two matrices by each other.
 ///
 /// Returns an MatError.Sizemismatch on failure.
@@ -827,18 +863,6 @@ fn pade13(alloc: std.mem.Allocator, As: Mat, A2: Mat, A4: Mat, A6: Mat, U: Mat, 
     defer temp2.deinit();
     try copyMat(temp2, U);
 }
-
-// TODO: Implement these below, maybe these should
-// be under /linalg?
-
-/// Does a best effort diagonalization of matrix A.
-///
-/// Returns a [3]Mat, which contains PDP^(-1) which equals A.
-//pub fn diagonalizeMat(alloc: std.mem.Allocator, A: Mat) ![3]Mat {}
-
-//pub fn eigenValues(alloc: std.mem.Allocator, mat: Mat) ![]f64 {}
-
-//pub fn eigenVectors(alloc: std.mem.Allocator, eigVals: []f64) !Mat {}
 
 // TODO: Improve this function. Make general.
 /// Recursively determines the determinant for larger than 3x3 matrices.
