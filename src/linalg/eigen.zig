@@ -67,7 +67,7 @@ pub fn arnoldi_iteration(A: Mat, init_vec: Vec, iter: usize, alloc: std.mem.Allo
 
 /// Returns the eigenvalues of A as a slice (the diagonal after reduction).
 /// Caller owns the returned slice. If 'iters' is non-null, the iteration
-/// count is written to it.
+/// count is written to it. 'iters' COUNTS a deflation event as an iteration.
 ///
 /// Uses the QR algorithm with Wilkinson shift and deflation.
 ///
@@ -152,7 +152,7 @@ pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
 }
 
 /// Returns the 'm' eigenvalues of an m×m matrix A. Caller owns the returned
-/// slice. If 'iters' is non-null, the QR iteration count is written to it.
+/// slice. If 'iters' is non-null, the QR iteration count is written to it. 'iters' COUNTS a deflation event as an iteration.
 ///
 /// Reduces A to upper Hessenberg form with a full Arnoldi run, then extracts
 /// the eigenvalues with 'qrAlgorithm'.

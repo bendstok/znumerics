@@ -81,4 +81,40 @@ pub fn main() !void {
         defer alloc.free(eigs);
         report("4x4 tridiagonal    (eigenvalues) ", eigs, it);
     }
+
+    // 8x8 dense symmetric: same matrix both ways, to compare iteration counts.
+    // qrAlgorithm runs the shifted QR directly on the dense matrix; eigenvalues
+    // first reduces it to Hessenberg form via Arnoldi, which the QR iteration
+    // then chews through in fewer sweeps.
+    {
+        std.debug.print("\n8x8 dense symmetric (same matrix, two routes):\n", .{});
+        const data = [_][8]f64{
+            .{ 0, 3, 4, 1, 6, 5, 3, 4 },
+            .{ 3, 6, 3, 4, 2, 2, 1, 4 },
+            .{ 4, 3, 6, 2, 2, 6, 3, 4 },
+            .{ 1, 4, 2, 4, 3, 6, 5, 0 },
+            .{ 6, 2, 2, 3, 6, 0, 4, 3 },
+            .{ 5, 2, 6, 6, 0, 0, 1, 4 },
+            .{ 3, 1, 3, 5, 4, 1, 6, 3 },
+            .{ 4, 4, 4, 0, 3, 4, 3, 0 },
+        };
+
+        var A1 = try Mat.initZero(alloc, 8, 8);
+        defer A1.deinit();
+        setMat(A1, data);
+        var it_direct: usize = 0;
+        const e_direct = try znum.eigen.qrAlgorithm(alloc, A1, 1000, 1e-12, &it_direct);
+        defer alloc.free(e_direct);
+        std.mem.sort(f64, e_direct, {}, std.sort.desc(f64));
+        report("  qrAlgorithm (direct on dense)    ", e_direct, it_direct);
+
+        var A2 = try Mat.initZero(alloc, 8, 8);
+        defer A2.deinit();
+        setMat(A2, data);
+        var it_pipe: usize = 0;
+        const e_pipe = try znum.eigenvalues(alloc, A2, 1000, 1e-12, &it_pipe);
+        defer alloc.free(e_pipe);
+        std.mem.sort(f64, e_pipe, {}, std.sort.desc(f64));
+        report("  eigenvalues (Arnoldi -> QR)      ", e_pipe, it_pipe);
+    }
 }
