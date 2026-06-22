@@ -65,11 +65,43 @@ pub fn arnoldi_iteration(A: Mat, init_vec: Vec, iter: usize, alloc: std.mem.Allo
     return res;
 }
 
+const Givens = struct { c: f64, s: f64 };
+
+fn givens(a: f64, b: f64) Givens {
+    if (b == 0) return .{ .c = 1, .s = 0 };
+    const r = @sqrt(a * a + b * b);
+    return .{ .c = a / r, .s = -b / r };
+}
+
+// left-apply to rows i and i+1, across the active block's columns [0, m)
+fn rotRows(H: Mat, i: usize, g: Givens, m: usize) void {
+    for (0..m) |j| {
+        const p = H.atUnsafe(i, j);
+        const q = H.atUnsafe(i + 1, j);
+        H.setUnsafe(i, j, g.c * p - g.s * q);
+        H.setUnsafe(i + 1, j, g.s * p + g.c * q);
+    }
+}
+
+// right-apply (Gᵀ) to columns i and i+1, down the active block's rows [0, m)
+fn rotCols(H: Mat, i: usize, g: Givens, m: usize) void {
+    for (0..m) |r| {
+        const p = H.atUnsafe(r, i);
+        const q = H.atUnsafe(r, i + 1);
+        H.setUnsafe(r, i, g.c * p - g.s * q);
+        H.setUnsafe(r, i + 1, g.s * p + g.c * q);
+    }
+}
+
 /// Returns the eigenvalues of A as a slice (the diagonal after reduction).
-/// Caller owns the returned slice. If 'iters' is non-null, the iteration
-/// count is written to it. 'iters' COUNTS a deflation event as an iteration.
+/// Caller owns the returned slice. If 'iters' is non-null, the QR sweep count
+/// is written to it.
 ///
-/// Uses the QR algorithm with Wilkinson shift and deflation.
+/// Reduces A to upper Hessenberg form once (Householder similarity), then runs
+/// the QR algorithm with Wilkinson shift and deflation, applying each shifted
+/// sweep as in-place Givens rotations. For a symmetric A the reduction yields a tridiagonal matrix.
+///
+/// Accepts any real square matrix.
 ///
 /// LIMITATION: only matrices with a real spectrum converge (e.g. symmetric /
 /// Hermitian, or any matrix known to have real eigenvalues). Matrices with
@@ -81,6 +113,161 @@ pub fn arnoldi_iteration(A: Mat, init_vec: Vec, iter: usize, alloc: std.mem.Allo
 ///
 /// Returns a BadShape error if A is not square.
 pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]f64 {
+    if (A.rows != A.cols) return err_mod.Common.BadShape;
+    const n = A.rows;
+
+    var Ak = try A.clone();
+    defer Ak.deinit();
+
+    // Reduce A to upper Hessenberg form once (Householder similarity), so the
+    // single-Givens-per-column sweep below is valid and each sweep is O(n²).
+    // For a symmetric A this produces a tridiagonal matrix. Eigenvalues are
+    // preserved (Ak := HₖAkHₖ), which is all we read out at the end.
+    if (n > 2) {
+        const v = try alloc.alloc(f64, n);
+        defer alloc.free(v);
+        for (0..n - 2) |k| {
+            var nrm: f64 = 0;
+            for (k + 1..n) |i| nrm += Ak.atUnsafe(i, k) * Ak.atUnsafe(i, k);
+            nrm = @sqrt(nrm);
+            if (nrm == 0) continue;
+            const x0 = Ak.atUnsafe(k + 1, k);
+            const alpha: f64 = if (x0 >= 0) -nrm else nrm; // stable sign
+            v[k + 1] = x0 - alpha;
+            for (k + 2..n) |i| v[i] = Ak.atUnsafe(i, k);
+            var vv: f64 = 0;
+            for (k + 1..n) |i| vv += v[i] * v[i];
+            if (vv == 0) continue;
+            const beta = 2.0 / vv;
+            // Left:  Ak := (I - beta v vᵀ) Ak
+            for (0..n) |j| {
+                var dt: f64 = 0;
+                for (k + 1..n) |i| dt += v[i] * Ak.atUnsafe(i, j);
+                const w = beta * dt;
+                for (k + 1..n) |i| Ak.setUnsafe(i, j, Ak.atUnsafe(i, j) - v[i] * w);
+            }
+            // Right: Ak := Ak (I - beta v vᵀ)
+            for (0..n) |i| {
+                var dt: f64 = 0;
+                for (k + 1..n) |j| dt += Ak.atUnsafe(i, j) * v[j];
+                const w = beta * dt;
+                for (k + 1..n) |j| Ak.setUnsafe(i, j, Ak.atUnsafe(i, j) - w * v[j]);
+            }
+        }
+    }
+
+    const rotation = try alloc.alloc(Givens, n);
+    defer alloc.free(rotation);
+
+    var iter: usize = 0;
+    var m: usize = n; // Active leading block for deflation
+
+    while (m > 1 and iter < max_iter) : (iter += 1) {
+        // Deflation: is the bottom subdiagonal of the active block negligible?
+        const sub = @abs(Ak.atUnsafe(m - 1, m - 2));
+        const scale = @abs(Ak.atUnsafe(m - 2, m - 2)) + @abs(Ak.atUnsafe(m - 1, m - 1));
+        if (sub <= tolerance * scale) { // lock in Ak[m-1,m-1] as a converged eigenvalue
+            m -= 1;
+            continue;
+        }
+
+        // Wilkinson shift from the trailing 2x2 of the active block.
+        const a = Ak.atUnsafe(m - 2, m - 2);
+        const b = Ak.atUnsafe(m - 2, m - 1);
+        const c = Ak.atUnsafe(m - 1, m - 2);
+        const d = Ak.atUnsafe(m - 1, m - 1);
+        const delta = (a - d) / 2.0;
+        const bc = b * c;
+        var mu = d;
+        const denom = @abs(delta) + @sqrt(@max(delta * delta + bc, 0.0));
+        if (denom != 0) {
+            const sign: f64 = if (delta >= 0) 1.0 else -1.0;
+            mu = d - sign * bc / denom;
+        }
+
+        // Shifted Givens QR step on the active mxm block.
+        for (0..m) |i| Ak.setUnsafe(i, i, Ak.atUnsafe(i, i) - mu); // shift
+
+        for (0..m - 1) |i| { // forward sweep: zero each subdiagonal, store rotation
+            rotation[i] = givens(Ak.atUnsafe(i, i), Ak.atUnsafe(i + 1, i));
+            rotRows(Ak, i, rotation[i], m);
+        }
+        for (0..m - 1) |i| { // right-apply Gᵀ: restores Hessenberg form
+            rotCols(Ak, i, rotation[i], m);
+        }
+
+        for (0..m) |i| Ak.setUnsafe(i, i, Ak.atUnsafe(i, i) + mu); // unshift
+    }
+
+    if (iters) |p| p.* = iter;
+
+    const eigs = try alloc.alloc(f64, n);
+    for (0..n) |i| eigs[i] = Ak.atUnsafe(i, i);
+    return eigs;
+}
+
+/// Returns the 'm' eigenvalues of an m×m matrix A. Caller owns the returned
+/// slice. If 'iters' is non-null, the QR sweep count is written to it.
+///
+/// Reduces A to upper Hessenberg form with a full Arnoldi run, then extracts
+/// the eigenvalues with 'qrAlgorithm'.
+///
+/// NOTE: 'qrAlgorithm' already performs its own Hessenberg reduction, so for a
+/// dense full-spectrum problem this path reduces twice and is slower than
+/// calling 'qrAlgorithm' directly — prefer that here. This pipeline exists to
+/// exercise the Arnoldi reduction; its real niche is large, sparse matrices
+/// where only a few eigenvalues are wanted (run Arnoldi to a small dimension).
+///
+/// LIMITATION: same real-spectrum restriction as 'qrAlgorithm' — intended for
+/// symmetric / real-eigenvalue matrices; complex eigenvalues are not supported.
+/// A fixed all-ones start vector is used, so for an input it fails to excite
+/// the Arnoldi process may break down early and return only a partial spectrum.
+///
+/// Returns a BadShape error if A is not square.
+pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]f64 {
+    if (A.rows != A.cols) return err_mod.Common.BadShape;
+    const m = A.rows;
+
+    // Starting vector b = ones: has a component along every eigenvector for a
+    // generic matrix, which avoids an early (deficient) Arnoldi breakdown.
+    var b = try Vec.initZero(alloc, m, true);
+    defer b.deinit();
+    for (0..m) |i| b.setUnsafe(i, 1.0);
+
+    // Arnoldi to full dimension (iter = m) reduces A to Hessenberg form.
+    var ar = try arnoldi_iteration(A, b, m, alloc);
+    defer ar.Q.deinit();
+    defer ar.h.deinit();
+
+    // Square Hessenberg block H = h[0:m, 0:m] (drop the trailing residual row).
+    var H = try Mat.initZero(alloc, m, m);
+    defer H.deinit();
+    for (0..m) |i| {
+        for (0..m) |j| H.setUnsafe(i, j, ar.h.atUnsafe(i, j));
+    }
+
+    return qrAlgorithm(alloc, H, max_iter, tolerance, iters);
+}
+
+/// LEGACY: superseded by 'qrAlgorithm', kept only for reference/comparison.
+///
+/// Returns the eigenvalues of A as a slice (the diagonal after reduction).
+/// Caller owns the returned slice. If 'iters' is non-null, the iteration
+/// count is written to it.
+///
+/// Uses the QR algorithm with Wilkinson shift and deflation, forming each QR
+/// step explicitly via the Householder 'qrDecomposition' plus 'matMult'. It
+/// works on any dense real-spectrum matrix, but is slow.
+///
+/// LIMITATION: only matrices with a real spectrum converge (e.g. symmetric /
+/// Hermitian). Matrices with complex-conjugate eigenvalues will NOT converge —
+/// the iteration leaves 2x2 blocks on the diagonal; complex is not supported.
+///
+/// Stops once every subdiagonal has deflated, or after 'max_iter' sweeps
+/// (best effort: the current diagonal is returned either way).
+///
+/// Returns a BadShape error if A is not square.
+pub fn qrAlgorithm_LEGACY(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]f64 {
     if (A.rows != A.cols) return err_mod.Common.BadShape;
     const n = A.rows;
 
@@ -149,43 +336,6 @@ pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
     const eigs = try alloc.alloc(f64, n);
     for (0..n) |i| eigs[i] = Ak.atUnsafe(i, i);
     return eigs;
-}
-
-/// Returns the 'm' eigenvalues of an m×m matrix A. Caller owns the returned
-/// slice. If 'iters' is non-null, the QR iteration count is written to it. 'iters' COUNTS a deflation event as an iteration.
-///
-/// Reduces A to upper Hessenberg form with a full Arnoldi run, then extracts
-/// the eigenvalues with 'qrAlgorithm'.
-///
-/// LIMITATION: same real-spectrum restriction as 'qrAlgorithm' — intended for
-/// symmetric / real-eigenvalue matrices; complex eigenvalues are not supported.
-/// A fixed all-ones start vector is used, so for an input it fails to excite
-/// the Arnoldi process may break down early and return only a partial spectrum.
-///
-/// Returns a BadShape error if A is not square.
-pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]f64 {
-    if (A.rows != A.cols) return err_mod.Common.BadShape;
-    const m = A.rows;
-
-    // Starting vector b = ones: has a component along every eigenvector for a
-    // generic matrix, which avoids an early (deficient) Arnoldi breakdown.
-    var b = try Vec.initZero(alloc, m, true);
-    defer b.deinit();
-    for (0..m) |i| b.setUnsafe(i, 1.0);
-
-    // Arnoldi to full dimension (iter = m) reduces A to Hessenberg form.
-    var ar = try arnoldi_iteration(A, b, m, alloc);
-    defer ar.Q.deinit();
-    defer ar.h.deinit();
-
-    // Square Hessenberg block H = h[0:m, 0:m] (drop the trailing residual row).
-    var H = try Mat.initZero(alloc, m, m);
-    defer H.deinit();
-    for (0..m) |i| {
-        for (0..m) |j| H.setUnsafe(i, j, ar.h.atUnsafe(i, j));
-    }
-
-    return qrAlgorithm(alloc, H, max_iter, tolerance, iters);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +511,25 @@ test "QR algorithm: eigenvalues of symmetric matrices" {
 
         const expected = [_]f64{ 4.74528124, 3.17728292, 1.82271708, 0.25471876 };
         for (0..4) |i| try testing.expectApproxEqAbs(expected[i], eigs[i], 1e-6);
+    }
+
+    // Dense symmetric 3x3 (NOT Hessenberg: entry (2,0) != 0) -> exercises the
+    // Householder Hessenberg reduction inside qrAlgorithm.
+    {
+        var A = try Mat.initZero(alloc, 3, 3);
+        defer A.deinit();
+        setMat(A, [_][3]f64{
+            .{ 2, 1, 1 },
+            .{ 1, 3, 2 },
+            .{ 1, 2, 4 },
+        });
+
+        const eigs = try qrAlgorithm(alloc, A, 1000, 1e-12, null);
+        defer alloc.free(eigs);
+        std.mem.sort(f64, eigs, {}, std.sort.desc(f64));
+
+        const expected = [_]f64{ 6.04891734, 1.64310413, 1.30797853 };
+        for (0..3) |i| try testing.expectApproxEqAbs(expected[i], eigs[i], 1e-6);
     }
 }
 
