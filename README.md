@@ -31,6 +31,9 @@ Compared against Python on the same machine (`python benchmarks/bench.py`), ns/i
 | matmul 64x64 | 35,020 | 27,985 | 9,800,710 |
 | eigenvalues 20x20 | 15,084 | 14,264 | - |
 
+NB: addSIMD is approx equal to add (the plain loop auto-vectorizes),
+matMultSIMD is approx 1.8x faster than matMult.
+
 ## Run example
 ```sh
 zig build examples
