@@ -14,92 +14,65 @@ pub const InverseError = error{
 } || err_mod.Common;
 
 /// The Matrix type.
-/// The data is stored as row vectors.
+/// The data is stored as one flat slice, row-major.
 ///
 /// Stored on the heap.
 pub const Mat = struct {
     alloc: std.mem.Allocator,
     rows: usize,
     cols: usize,
-    data: []Vec,
+    data: []f64,
 
     pub fn init(alloc: std.mem.Allocator, rows: usize, cols: usize) !Mat {
         if (rows == 0 or cols == 0) return MatError.Empty;
-        const data = try alloc.alloc(Vec, rows);
+        const data = try alloc.alloc(f64, rows * cols);
+        errdefer alloc.free(data);
 
-        var inited: usize = 0;
-        // We only free data we actually got to
-        // initialize
-        errdefer {
-            for (0..inited) |r| data[r].deinit();
-            alloc.free(data);
-        }
-
-        for (0..data.len) |r| {
-            data[r] = try Vec.init(alloc, cols, false);
-            inited += 1;
-        }
-        return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = @constCast(data) };
+        return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = data };
     }
 
     pub fn initZero(alloc: std.mem.Allocator, rows: usize, cols: usize) !Mat {
         if (rows == 0 or cols == 0) return MatError.Empty;
-        const data = try alloc.alloc(Vec, rows);
+        const data = try alloc.alloc(f64, rows * cols);
+        errdefer alloc.free(data);
 
-        var inited: usize = 0;
-        // We only free data we actually got to
-        // initialize
-        errdefer {
-            for (0..inited) |r| data[r].deinit();
-            alloc.free(data);
-        }
-        for (0..data.len) |r| {
-            data[r] = try Vec.initZero(alloc, cols, false);
-            inited += 1;
-        }
-        return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = @constCast(data) };
+        @memset(data, 0);
+        return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = data };
     }
 
     pub fn initIdentity(alloc: std.mem.Allocator, rows: usize, cols: usize) !Mat {
         if (rows == 0 or cols == 0) return MatError.Empty;
-        const data = try alloc.alloc(Vec, rows);
-        var inited: usize = 0;
-        // We only free data we actually got to
-        // initialize
-        errdefer {
-            for (0..inited) |r| data[r].deinit();
-            alloc.free(data);
+        const data = try alloc.alloc(f64, rows * cols);
+        errdefer alloc.free(data);
+        @memset(data, 0);
+
+        const i: usize = @min(rows, cols);
+        for (0..i) |eq| {
+            data[eq * cols + eq] = 1;
         }
-        for (0..data.len) |r| {
-            data[r] = try Vec.initZero(alloc, cols, false);
-            inited += 1;
-        }
-        // Make it an identity matrix
-        for (0..data.len) |i| {
-            for (0..data[i].len()) |j| {
-                // We can use unsafe here because we will never go outside bounds
-                if (i == j) data[i].setUnsafe(j, 1.0);
-            }
-        }
-        return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = @constCast(data) };
+
+        return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = data };
     }
 
     pub fn deinit(self: *Mat) void {
-        for (0..self.rows) |r| {
-            if (self.data[r].len() != 0) {
-                self.data[r].deinit();
-            }
-        }
         self.alloc.free(self.data);
         self.* = undefined;
     }
 
+    fn idx(self: Mat, r: usize, c: usize) usize {
+        return (r * self.cols + c);
+    }
+
+    fn get_row(self: Mat, r: usize) []f64 {
+        return (self.data[r * self.cols ..][0..self.cols]);
+    }
+
     /// Returns the value at the corresponding location.
     ///
-    /// Does bounds checking. Returns a VecError/MatError.IndexOutOfBounds on failure.
+    /// Does bounds checking. Returns a MatError.IndexOutOfBounds on failure.
     pub fn at(self: Mat, row: usize, col: usize) !f64 {
         try boundsCheck(self, row, col);
-        return try self.data[row].at(col);
+        return self.data[idx(self, row, col)];
     }
 
     /// Synonymys with .at().
@@ -111,42 +84,68 @@ pub const Mat = struct {
     ///
     /// No Boundary checks.
     pub fn atUnsafe(self: Mat, row: usize, col: usize) f64 {
-        return self.data[row].atUnsafe(col);
+        return self.data[idx(self, row, col)];
     }
 
     /// Sets the location to the value.
     ///
-    /// Does bounds checking. Returns a VecError/MatError.IndexOutOfBounds on failure.
+    /// Does bounds checking. Returns a MatError.IndexOutOfBounds on failure.
     pub fn set(self: Mat, row: usize, col: usize, val: f64) !void {
         try boundsCheck(self, row, col);
-        try self.data[row].set(col, val);
+        self.data[idx(self, row, col)] = val;
     }
 
     /// Sets the location to the value.
     ///
     /// Does no bounds checking, unsafe. See .set().
     pub fn setUnsafe(self: Mat, row: usize, col: usize, val: f64) void {
-        self.data[row].setUnsafe(col, val);
+        self.data[idx(self, row, col)] = val;
     }
 
     /// Sets all the values in the matrix.
     pub fn setAll(self: Mat, val: f64) void {
-        for (0..self.rows) |r| {
-            self.data[r].setAll(val);
-        }
+        @memset(self.data, val);
     }
 
-    /// Does length checks on 'new_values' before inserting.
+    /// Sets all values in a row to 'new_values'.
     ///
-    /// Returns a VecError.SizeMismatch on failure.
+    /// 'new_values' must be of type: f64, comptime_float, [_]f64 or []f64.
+    /// Returns MatError.IndexOutOfBounds on a bad row and
+    /// MatError.SizeMismatch on a length mismatch.
     pub fn setRow(self: Mat, row: usize, new_values: anytype) !void {
-        try self.data[row].setAll(new_values);
+        if (row >= self.rows) return MatError.IndexOutOfBounds;
+        const dst = self.get_row(row);
+        const T = @TypeOf(new_values);
+
+        switch (@typeInfo(T)) {
+            .float => {
+                if (T != f64) @compileError("MAT| setRow .float: only f64 is supported, got: " ++ @typeName(T) ++ "\n");
+                @memset(dst, new_values);
+            },
+            .comptime_float => {
+                @memset(dst, new_values);
+            },
+            .array => |arr| {
+                if (arr.child != f64) @compileError("MAT| setRow .array: only []f64 supported, got: " ++ @typeName(T) ++ "\n");
+                if (new_values.len != self.cols) return MatError.SizeMismatch;
+                @memcpy(dst, new_values[0..]);
+            },
+            .pointer => |p| {
+                if (p.child != f64) @compileError("MAT| setRow .pointer: only f64 children are allowed, got: " ++ @typeName(p.child) ++ "\n");
+                if (p.size != .slice) @compileError("MAT| setRow .pointer: Pointer must be of a Zig slice. \n");
+                if (new_values.len != self.cols) return MatError.SizeMismatch;
+                @memcpy(dst, new_values);
+            },
+            else => {
+                @compileError("MAT| setRow: Expected f64, comptime_float, []f64 or [_]f64, got: " ++ @typeName(T) ++ "\n");
+            },
+        }
     }
 
     /// Returns the row as a Vec. No bounds checks on inputted row.
     ///
     /// Deep copies.
-    pub fn getRow(self: Mat, row: usize, alloc: std.mem.Allocator) Vec {
+    pub fn getRow(self: Mat, row: usize, alloc: std.mem.Allocator) !Vec {
         var ret_vec = try Vec.initZero(alloc, self.cols, false);
         errdefer ret_vec.deinit();
         for (0..self.cols) |j| {
@@ -170,7 +169,7 @@ pub const Mat = struct {
     /// Sets all values in a coloumn to the values in 'new_values'.
     ///
     /// Checks underlying type of pointers and arrays and does bound checks.
-    /// Returns either a VecError or a MatError on failure.
+    /// Returns a MatError on failure.
     ///
     /// 'cons' must be of type: f64, comptime_float, [_]f64 or []f64.
     pub fn setCol(self: Mat, col: usize, new_values: anytype) !void {
@@ -180,16 +179,14 @@ pub const Mat = struct {
             .float => {
                 if (T != f64) @compileError("MAT| setCol .float: only f64 is supported, got: " ++ @typeName(T) ++ "\n");
                 for (0..self.rows) |r| {
-                    try self.setSafe(r, col, new_values);
+                    try self.set(r, col, new_values);
                 }
             },
             .array => |arr| {
                 if (arr.child != f64) @compileError("MAT| setCol .array: only []f64 supported, got: " ++ @typeName(T) ++ "\n");
                 if (new_values.len != self.rows) return MatError.SizeMismatch;
                 for (0..self.rows) |r| {
-                    for (0..new_values.len) |i| {
-                        try self.setSafe(r, col, new_values[i]);
-                    }
+                    try self.set(r, col, new_values[r]);
                 }
             },
             .pointer => |p| {
@@ -300,15 +297,15 @@ pub const Mat = struct {
     /// Multiplies all values in a row by 'mult'
     pub fn multRow(self: Mat, row: usize, mult: f64) !void {
         try boundsCheck(self, row, 0);
-        self.data[row].multConst(mult);
+        for (0..self.cols) |j| {
+            self.setUnsafe(row, j, mult * self.atUnsafe(row, j));
+        }
     }
 
     /// Multiplies all values in the matrix by 'mult'
     pub fn multAll(self: Mat, mult: f64) void {
-        for (0..self.rows) |r| {
-            // We can use unsafe here since we know
-            // we wont go out of bounds.
-            self.data[r].multConstUnsafe(mult);
+        for (self.data) |*v| {
+            v.* *= mult;
         }
     }
 
@@ -317,9 +314,11 @@ pub const Mat = struct {
     /// Does boundary checks. Returns an MatError.IndexOutOfBounds on failure.
     pub fn swapRow(self: Mat, row1: usize, row2: usize) !void {
         if (row1 >= self.rows or row2 >= self.rows) return MatError.IndexOutOfBounds;
-        const temp = self.data[row1];
-        self.data[row1] = self.data[row2];
-        self.data[row2] = temp;
+        const r1 = self.get_row(row1);
+        const r2 = self.get_row(row2);
+        for (r1, r2) |*a, *b| {
+            std.mem.swap(f64, a, b);
+        }
     }
 
     /// Returns the Norm_1 (max coloumn sum) of the matrix
@@ -337,12 +336,8 @@ pub const Mat = struct {
 
     /// Returns a matrix which is a deep copy of itself
     pub fn clone(self: Mat) !Mat {
-        var retMat = try Mat.initZero(self.alloc, self.rows, self.cols);
-        try copyMat(self, retMat);
-        // TODO: Below is a dirty 'hack' to satisfy
-        // retMat being a 'var', find a fix. @constCast ?
-        try retMat.set(0, 0, try retMat.at(0, 0));
-        return retMat;
+        const data = try self.alloc.dupe(f64, self.data);
+        return .{ .alloc = self.alloc, .rows = self.rows, .cols = self.cols, .data = data };
     }
 
     /// Adds the two matrices index by index
@@ -355,61 +350,40 @@ pub const Mat = struct {
         const r = self.rows;
         const c = self.cols;
         if (r != toAdd.rows or c != toAdd.cols) return MatError.SizeMismatch;
-        var retMat = try Mat.initZero(self.alloc, r, c);
-        errdefer retMat.deinit();
+        const retMat = try Mat.init(self.alloc, r, c);
 
-        for (0..r) |i| {
-            for (0..c) |j| {
-                try retMat.set(i, j, try self.at(i, j) + try toAdd.at(i, j));
-            }
+        for (retMat.data, self.data, toAdd.data) |*o, a, b| {
+            o.* = a + b;
         }
         return retMat;
     }
 
-    /// Uses SIMD to add the rows together, and returns the matrix. Same as .add().
+    /// Uses SIMD to add the matrices together, and returns the matrix. Same as .add().
     ///
     /// Tries to use AVX-512 SIMD, but the compiler will fallback to the greatest
     /// available SIMD instruction available.
     ///
-    /// The adds are done in sets of 8. The tail is done
-    /// in non-SIMD.
+    /// With contiguous storage the whole matrix is one flat slice, so the
+    /// adds are direct 8-lane vector loads/stores over the full data,
+    /// not per-row gathers. The tail is done in non-SIMD.
     pub fn addSIMD(self: Mat, toAdd: Mat) !Mat {
-        const r = self.rows;
-        const c = self.cols;
-        if (r != toAdd.rows or c != toAdd.cols) return MatError.SizeMismatch;
-
-        // AVX-512 supports 512 bit SIMD
-        // Compiler will make multiple SIMD instructions
-        // if not supported.
-        var retMat = try Mat.initZero(self.alloc, r, c);
-        errdefer retMat.deinit();
+        if (self.rows != toAdd.rows or self.cols != toAdd.cols) return MatError.SizeMismatch;
+        const retMat = try Mat.init(self.alloc, self.rows, self.cols);
 
         const vec_len: usize = 8;
+        const n = self.data.len;
+        const simd_n = (n / vec_len) * vec_len;
 
-        const simd_cols = (c / vec_len) * vec_len; // Largest multiple of 8
-        for (0..r) |i| {
-            var j: usize = 0;
-            // We compute in blocks of 8
-            while (j < simd_cols) : (j += vec_len) {
-                var a = @Vector(vec_len, f64){ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-                var b = @Vector(vec_len, f64){ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-                inline for (0..vec_len) |k| {
-                    a[k] = self.atUnsafe(i, j + k);
-                    b[k] = toAdd.atUnsafe(i, j + k);
-                }
-
-                const s = a + b;
-
-                inline for (0..vec_len) |k| {
-                    retMat.setUnsafe(i, j + k, s[k]);
-                }
-            }
-            // Tail
-            while (j < c) : (j += 1) {
-                retMat.setUnsafe(i, j, self.atUnsafe(i, j) + toAdd.atUnsafe(i, j));
-            }
+        var i: usize = 0;
+        while (i < simd_n) : (i += vec_len) {
+            const a: @Vector(vec_len, f64) = self.data[i..][0..vec_len].*;
+            const b: @Vector(vec_len, f64) = toAdd.data[i..][0..vec_len].*;
+            retMat.data[i..][0..vec_len].* = a + b;
         }
-
+        // Tail
+        while (i < n) : (i += 1) {
+            retMat.data[i] = self.data[i] + toAdd.data[i];
+        }
         return retMat;
     }
 
@@ -423,10 +397,8 @@ pub const Mat = struct {
         const r = self.rows;
         const c = self.cols;
         if (r != toAdd.rows or c != toAdd.cols) return MatError.SizeMismatch;
-        for (0..r) |i| {
-            for (0..c) |j| {
-                try self.set(i, j, try self.at(i, j) + try toAdd.at(i, j));
-            }
+        for (self.data, toAdd.data) |*a, b| {
+            a.* += b;
         }
     }
 
@@ -440,11 +412,10 @@ pub const Mat = struct {
         const r = self.rows;
         const c = self.cols;
         if (r != toSub.rows or c != toSub.cols) return MatError.SizeMismatch;
-        var retMat = try Mat.initZero(self.alloc, r, c);
-        for (0..r) |i| {
-            for (0..c) |j| {
-                try retMat.set(i, j, try self.at(i, j) - try toSub.at(i, j));
-            }
+        const retMat = try Mat.init(self.alloc, r, c);
+
+        for (retMat.data, self.data, toSub.data) |*o, a, b| {
+            o.* = a - b;
         }
         return retMat;
     }
@@ -459,10 +430,8 @@ pub const Mat = struct {
         const r = self.rows;
         const c = self.cols;
         if (r != toSub.rows or c != toSub.cols) return MatError.SizeMismatch;
-        for (0..r) |i| {
-            for (0..c) |j| {
-                try self.set(i, j, try self.at(i, j) - try toSub.at(i, j));
-            }
+        for (self.data, toSub.data) |*a, b| {
+            a.* -= b;
         }
     }
 
@@ -473,9 +442,7 @@ pub const Mat = struct {
         if (self.rows != self.cols) return MatError.BadShape;
         var tr: f64 = 0.0;
         for (0..self.rows) |i| {
-            for (0..self.cols) |j| {
-                if (i == j) tr += self.atUnsafe(i, j);
-            }
+            tr += self.atUnsafe(i, i);
         }
         return tr;
     }
@@ -500,9 +467,7 @@ pub const Mat = struct {
 pub fn copyMat(from: Mat, to: Mat) !void {
     if (to.cols < from.cols or to.rows < from.rows) return MatError.SizeMismatch;
     for (0..from.rows) |r| {
-        for (0..from.cols) |c| {
-            try to.set(r, c, try from.at(r, c));
-        }
+        @memcpy(to.get_row(r)[0..from.cols], from.get_row(r));
     }
 }
 
@@ -603,19 +568,20 @@ pub fn inverse(alloc: std.mem.Allocator, A: Mat) !Mat {
 /// Returns an MatError.Sizemismatch on failure.
 pub fn matMult(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
     if (left.cols != right.rows) return MatError.SizeMismatch;
-    var retMat: Mat = try Mat.initZero(alloc, left.rows, right.cols);
-    // In case of error, we need to deinit the matrix
-    errdefer retMat.deinit();
+    const retMat: Mat = try Mat.initZero(alloc, left.rows, right.cols);
 
-    for (0..left.rows) |r| {
-        for (0..right.cols) |c| {
-            // We now have a loop over all the values in the retMat
-            // We work our way backwards.
-            var val: f64 = 0;
-            for (0..left.cols) |k| {
-                val += (try left.at(r, k)) * (try right.at(k, c));
+    // i-k-j loop order: all three row slices are traversed
+    // sequentially, which is cache friendly and lets the
+    // compiler auto-vectorize the inner loop.
+    for (0..left.rows) |i| {
+        const left_row = left.get_row(i);
+        const out_row = retMat.get_row(i);
+        for (0..left.cols) |k| {
+            const a = left_row[k];
+            const right_row = right.get_row(k);
+            for (out_row, right_row) |*o, b| {
+                o.* += a * b;
             }
-            try retMat.set(r, c, val);
         }
     }
     return retMat;
@@ -633,18 +599,22 @@ pub fn matVec(alloc: std.mem.Allocator, A: Mat, x: Vec) !Vec {
     return out;
 }
 
-/// Multiplies the two matrices by each other.
+/// Multiplies the two matrices by each other using explicit SIMD.
 ///
-/// Returns an MatError.Sizemismatch on failure.
+/// Transposes 'right' so both operands of each dot product are
+/// contiguous rows, then accumulates in 8-lane vectors with direct
+/// slice loads. The tail is done in non-SIMD.
+///
+/// Returns an MatError.SizeMismatch on failure.
 pub fn matMultSIMD(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
-    if (left.rows != right.cols) return MatError.SizeMismatch;
-    var retMat: Mat = try Mat.initZero(alloc, left.rows, right.cols);
+    if (left.cols != right.rows) return MatError.SizeMismatch;
+    var retMat: Mat = try Mat.init(alloc, left.rows, right.cols);
     // In case of error, we need to deinit the matrix
     errdefer retMat.deinit();
 
     const vec_len: usize = 8;
 
-    // Coloumns become rows so we can access them in a loop
+    // Coloumns become rows so we can access them contiguously
     var rightT = try transpose(right, alloc);
     defer rightT.deinit();
 
@@ -652,32 +622,26 @@ pub fn matMultSIMD(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
     const simd_n = (n / vec_len) * vec_len;
 
     for (0..left.rows) |r| {
+        const left_row = left.get_row(r);
+        const out_row = retMat.get_row(r);
         for (0..right.cols) |c| {
-            var accumulator = @Vector(vec_len, f64){ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+            const rightT_row = rightT.get_row(c);
+            var accumulator: @Vector(vec_len, f64) = @splat(0.0);
 
             var k: usize = 0;
             while (k < simd_n) : (k += vec_len) {
-                var a = @Vector(vec_len, f64){ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-                var b = @Vector(vec_len, f64){ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-
-                inline for (0..vec_len) |lane| {
-                    a[lane] = left.atUnsafe(r, k + lane);
-                    b[lane] = rightT.atUnsafe(c, k + lane);
-                }
-
+                const a: @Vector(vec_len, f64) = left_row[k..][0..vec_len].*;
+                const b: @Vector(vec_len, f64) = rightT_row[k..][0..vec_len].*;
                 accumulator += a * b;
             }
             // Horizontal sum of SIMD accumulator
-            var sum: f64 = 0.0;
-            inline for (0..vec_len) |lane| {
-                sum += accumulator[lane];
-            }
+            var sum: f64 = @reduce(.Add, accumulator);
             // Tail
             while (k < n) : (k += 1) {
-                sum += left.atUnsafe(r, k) * rightT.atUnsafe(c, k);
+                sum += left_row[k] * rightT_row[k];
             }
 
-            retMat.setUnsafe(r, c, sum);
+            out_row[c] = sum;
         }
     }
     return retMat;

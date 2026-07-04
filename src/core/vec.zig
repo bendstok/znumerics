@@ -50,10 +50,9 @@ pub const Vec = struct {
     pub fn norm(self: Vec) f64 {
         var sum: f64 = 0.0;
         for (self.data) |d| {
-            sum += std.math.pow(f64, d, 2);
+            sum += d * d;
         }
-        sum = std.math.sqrt(sum);
-        return sum;
+        return std.math.sqrt(sum);
     }
 
     /// Normalizes the vector using the Euclidean norm.
@@ -214,7 +213,7 @@ pub const Vec = struct {
     pub fn addInPlace(self: Vec, ToAdd: Vec) !void {
         if (self.len() != ToAdd.len()) return VecError.SizeMismatch;
         for (0..self.len()) |idx| {
-            self.setUnsafe(idx, self.atUnsafe(idx) + ToAdd.at(idx));
+            self.setUnsafe(idx, self.atUnsafe(idx) + ToAdd.atUnsafe(idx));
         }
     }
 
