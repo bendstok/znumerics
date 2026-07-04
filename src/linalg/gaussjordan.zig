@@ -8,7 +8,6 @@ const Mat = mat.Mat;
 
 pub const GaussJordanError = error{
     FreeVariable,
-    Unsolvable,
     Singular,
 } || err_mod.Common;
 
@@ -20,7 +19,7 @@ pub const GaussJordanError = error{
 ///
 /// Returns an GaussJordanError.FreeVariable when free variables have to be used to solve the system.
 /// Returns a GaussJordanError.Singular if it hits a divide by zero.
-pub fn gaussJordan(alloc: std.mem.Allocator, A: Mat, b: Vec) !Vec {
+pub fn gaussJordan(alloc: std.mem.Allocator, A: Mat, b: Vec) (GaussJordanError || std.mem.Allocator.Error)!Vec {
     var solved = try Vec.initZero(alloc, b.len(), true);
     errdefer solved.deinit();
     var A_mod = try Mat.initZero(alloc, A.rows, A.cols + 1);
@@ -110,4 +109,31 @@ test "Gauss-Jordan: Test" {
     try std.testing.expectApproxEqAbs(2.0, output.atUnsafe(0), 1e-8);
     try std.testing.expectApproxEqAbs(3.0, output.atUnsafe(1), 1e-8);
     try std.testing.expectApproxEqAbs(-1.0, output.atUnsafe(2), 1e-8);
+}
+
+test "Gauss-Jordan: singular system -> Singular" {
+    const alloc = std.testing.allocator;
+
+    var B = try Mat.initZero(alloc, 2, 2);
+    defer B.deinit();
+    try B.setRow(0, [_]f64{ 1.0, 1.0 });
+    try B.setRow(1, [_]f64{ 1.0, 1.0 });
+
+    var y = try Vec.initZero(alloc, 2, true);
+    defer y.deinit();
+    y.setAllUnsafe([_]f64{ 1.0, 1.0 });
+
+    try std.testing.expectError(GaussJordanError.Singular, gaussJordan(alloc, B, y));
+}
+
+test "Gauss-Jordan: underdetermined system -> FreeVariable" {
+    const alloc = std.testing.allocator;
+
+    var B = try Mat.initZero(alloc, 2, 3);
+    defer B.deinit();
+
+    var y = try Vec.initZero(alloc, 2, true);
+    defer y.deinit();
+
+    try std.testing.expectError(GaussJordanError.FreeVariable, gaussJordan(alloc, B, y));
 }

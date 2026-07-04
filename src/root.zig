@@ -2,6 +2,7 @@
 const std = @import("std");
 
 // Namespaces
+pub const errors = @import("error.zig");
 pub const vec = @import("core/vec.zig");
 pub const mat = @import("core/mat.zig");
 

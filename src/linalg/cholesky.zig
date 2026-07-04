@@ -4,16 +4,21 @@ const err_mod = @import("../error.zig");
 
 const Mat = mat.Mat;
 
+pub const CholeskyError = error{
+    NotSquare,
+    NotPositiveDefinite,
+} || err_mod.Common;
+
 /// Returns the lower diagonal of the decomposition.
 /// For a real matrix, A = L * L^T.
 ///
 /// Uses the Cholesky–Banachiewicz algorithm.
 ///
-/// Returns an BadShape error if the matrix is not square.
-// TODO: This might also fail if the matrix is not
-// Hermitian positive-definite!
-pub fn cholesky(alloc: std.mem.Allocator, matrix: Mat) !Mat {
-    if (matrix.cols != matrix.rows) return err_mod.Common.BadShape;
+/// Returns a CholeskyError.NotSquare if the matrix is not square.
+/// Returns a CholeskyError.NotPositiveDefinite if the matrix is not
+/// Hermitian positive-definite (a diagonal pivot <= 0 is hit).
+pub fn cholesky(alloc: std.mem.Allocator, matrix: Mat) (CholeskyError || std.mem.Allocator.Error)!Mat {
+    if (matrix.cols != matrix.rows) return CholeskyError.NotSquare;
     var i: usize = 0;
     var L = try Mat.initZero(alloc, matrix.rows, matrix.cols);
     errdefer L.deinit();
@@ -29,7 +34,9 @@ pub fn cholesky(alloc: std.mem.Allocator, matrix: Mat) !Mat {
             }
 
             if (i == j) {
-                try L.set(i, j, std.math.sqrt(try matrix.at(i, i) - sum));
+                const d = try matrix.at(i, i) - sum;
+                if (d <= 0.0) return CholeskyError.NotPositiveDefinite;
+                try L.set(i, j, std.math.sqrt(d));
             } else {
                 try L.set(i, j, (1.0 / (try L.at(j, j)) * (try matrix.at(i, j) - sum)));
             }
@@ -69,4 +76,24 @@ test "Cholesky: Test" {
     try std.testing.expectApproxEqAbs(A.atUnsafe(2, 0), A2.atUnsafe(2, 0), 1e-8);
     try std.testing.expectApproxEqAbs(A.atUnsafe(2, 1), A2.atUnsafe(2, 1), 1e-8);
     try std.testing.expectApproxEqAbs(A.atUnsafe(2, 2), A2.atUnsafe(2, 2), 1e-8);
+}
+
+test "Cholesky: not square -> NotSquare" {
+    const alloc = std.testing.allocator;
+    var A = try mat.Mat.initZero(alloc, 2, 3);
+    defer A.deinit();
+
+    try std.testing.expectError(CholeskyError.NotSquare, cholesky(alloc, A));
+}
+
+test "Cholesky: not positive-definite -> NotPositiveDefinite" {
+    const alloc = std.testing.allocator;
+    var A = try mat.Mat.initZero(alloc, 2, 2);
+    defer A.deinit();
+
+    // Symmetric but indefinite: eigenvalues 1 and -1.
+    try A.setRow(0, [_]f64{ 0.0, 1.0 });
+    try A.setRow(1, [_]f64{ 1.0, 0.0 });
+
+    try std.testing.expectError(CholeskyError.NotPositiveDefinite, cholesky(alloc, A));
 }

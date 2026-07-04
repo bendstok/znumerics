@@ -5,13 +5,15 @@ const err_mod = @import("../error.zig");
 
 const Vec = vec.Vec;
 
-pub const MatError = error{
-    Empty,
-} || err_mod.Common;
+pub const MatError = err_mod.Common;
 
 pub const InverseError = error{
     Singular,
 } || err_mod.Common;
+
+/// Everything expm() can fail with: its own shape checks plus the
+/// Gauss-Jordan solve of the Pade system and allocation.
+pub const ExpmError = MatError || gj.GaussJordanError || std.mem.Allocator.Error;
 
 /// The Matrix type.
 /// The data is stored as one flat slice, row-major.
@@ -23,7 +25,7 @@ pub const Mat = struct {
     cols: usize,
     data: []f64,
 
-    pub fn init(alloc: std.mem.Allocator, rows: usize, cols: usize) !Mat {
+    pub fn init(alloc: std.mem.Allocator, rows: usize, cols: usize) (MatError || std.mem.Allocator.Error)!Mat {
         if (rows == 0 or cols == 0) return MatError.Empty;
         const data = try alloc.alloc(f64, rows * cols);
         errdefer alloc.free(data);
@@ -31,7 +33,7 @@ pub const Mat = struct {
         return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = data };
     }
 
-    pub fn initZero(alloc: std.mem.Allocator, rows: usize, cols: usize) !Mat {
+    pub fn initZero(alloc: std.mem.Allocator, rows: usize, cols: usize) (MatError || std.mem.Allocator.Error)!Mat {
         if (rows == 0 or cols == 0) return MatError.Empty;
         const data = try alloc.alloc(f64, rows * cols);
         errdefer alloc.free(data);
@@ -40,7 +42,7 @@ pub const Mat = struct {
         return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = data };
     }
 
-    pub fn initIdentity(alloc: std.mem.Allocator, rows: usize, cols: usize) !Mat {
+    pub fn initIdentity(alloc: std.mem.Allocator, rows: usize, cols: usize) (MatError || std.mem.Allocator.Error)!Mat {
         if (rows == 0 or cols == 0) return MatError.Empty;
         const data = try alloc.alloc(f64, rows * cols);
         errdefer alloc.free(data);
@@ -70,13 +72,13 @@ pub const Mat = struct {
     /// Returns the value at the corresponding location.
     ///
     /// Does bounds checking. Returns a MatError.IndexOutOfBounds on failure.
-    pub fn at(self: Mat, row: usize, col: usize) !f64 {
+    pub fn at(self: Mat, row: usize, col: usize) MatError!f64 {
         try boundsCheck(self, row, col);
         return self.data[idx(self, row, col)];
     }
 
     /// Synonymys with .at().
-    pub fn get(self: Mat, row: usize, col: usize) !f64 {
+    pub fn get(self: Mat, row: usize, col: usize) MatError!f64 {
         return (try at(self, row, col));
     }
 
@@ -90,7 +92,7 @@ pub const Mat = struct {
     /// Sets the location to the value.
     ///
     /// Does bounds checking. Returns a MatError.IndexOutOfBounds on failure.
-    pub fn set(self: Mat, row: usize, col: usize, val: f64) !void {
+    pub fn set(self: Mat, row: usize, col: usize, val: f64) MatError!void {
         try boundsCheck(self, row, col);
         self.data[idx(self, row, col)] = val;
     }
@@ -112,7 +114,7 @@ pub const Mat = struct {
     /// 'new_values' must be of type: f64, comptime_float, [_]f64 or []f64.
     /// Returns MatError.IndexOutOfBounds on a bad row and
     /// MatError.SizeMismatch on a length mismatch.
-    pub fn setRow(self: Mat, row: usize, new_values: anytype) !void {
+    pub fn setRow(self: Mat, row: usize, new_values: anytype) MatError!void {
         if (row >= self.rows) return MatError.IndexOutOfBounds;
         const dst = self.get_row(row);
         const T = @TypeOf(new_values);
@@ -145,7 +147,7 @@ pub const Mat = struct {
     /// Returns the row as a Vec. No bounds checks on inputted row.
     ///
     /// Deep copies.
-    pub fn getRow(self: Mat, row: usize, alloc: std.mem.Allocator) !Vec {
+    pub fn getRow(self: Mat, row: usize, alloc: std.mem.Allocator) (vec.VecError || std.mem.Allocator.Error)!Vec {
         var ret_vec = try Vec.initZero(alloc, self.cols, false);
         errdefer ret_vec.deinit();
         for (0..self.cols) |j| {
@@ -157,7 +159,7 @@ pub const Mat = struct {
     /// Returns the col as a Vec. No bounds checks on inputted col.
     ///
     /// Deep copies.
-    pub fn getCol(self: Mat, col: usize, alloc: std.mem.Allocator) !Vec {
+    pub fn getCol(self: Mat, col: usize, alloc: std.mem.Allocator) (vec.VecError || std.mem.Allocator.Error)!Vec {
         var ret_vec = try Vec.initZero(alloc, self.rows, true);
         errdefer ret_vec.deinit();
         for (0..self.rows) |i| {
@@ -172,7 +174,7 @@ pub const Mat = struct {
     /// Returns a MatError on failure.
     ///
     /// 'cons' must be of type: f64, comptime_float, [_]f64 or []f64.
-    pub fn setCol(self: Mat, col: usize, new_values: anytype) !void {
+    pub fn setCol(self: Mat, col: usize, new_values: anytype) MatError!void {
         const T = @TypeOf(new_values);
 
         switch (@typeInfo(T)) {
@@ -211,12 +213,13 @@ pub const Mat = struct {
     /// Prints a view of the matrix to std.debug.print
     ///
     /// Can fail because of bufPrint.
-    pub fn printMat(self: Mat) !void {
+    pub fn printMat(self: Mat) error{NoSpaceLeft}!void {
         for (0..self.rows) |r| {
             //std.debug.print("r={}: ", .{r});
             for (0..self.cols) |c| {
                 //std.debug.print("c={}", .{c});
-                const val: f64 = try self.at(r, c);
+                // In-bounds by loop construction.
+                const val: f64 = self.atUnsafe(r, c);
                 var tmp: [64]u8 = undefined;
                 const s = try std.fmt.bufPrint(&tmp, "{:.3}", .{val});
                 std.debug.print("{s: >10} ", .{s});
@@ -231,7 +234,7 @@ pub const Mat = struct {
     ///
     /// Returns a MatError.BadShape on failure.
     // TODO: Update this, we can now expand the matrix easily.
-    pub fn transposeInPlace(self: Mat) (MatError || err_mod.Common)!void {
+    pub fn transposeInPlace(self: Mat) MatError!void {
         if (self.rows != self.cols) return MatError.BadShape;
 
         for (0..self.rows) |r| {
@@ -250,7 +253,7 @@ pub const Mat = struct {
     ///
     /// To expand the matrix a new matrix is made, and takes the spot of the old one.
     /// This is to prevent complex situations in case of OOM error.
-    pub fn expand(self: *Mat, rows: usize, cols: usize, fill: f64) !void {
+    pub fn expand(self: *Mat, rows: usize, cols: usize, fill: f64) (MatError || std.mem.Allocator.Error)!void {
         if (rows == 0 or cols == 0) return MatError.Empty;
 
         if (self.rows >= rows or self.cols >= cols) {
@@ -295,7 +298,7 @@ pub const Mat = struct {
     }
 
     /// Multiplies all values in a row by 'mult'
-    pub fn multRow(self: Mat, row: usize, mult: f64) !void {
+    pub fn multRow(self: Mat, row: usize, mult: f64) MatError!void {
         try boundsCheck(self, row, 0);
         for (0..self.cols) |j| {
             self.setUnsafe(row, j, mult * self.atUnsafe(row, j));
@@ -312,7 +315,7 @@ pub const Mat = struct {
     /// Swaps two rows.
     ///
     /// Does boundary checks. Returns an MatError.IndexOutOfBounds on failure.
-    pub fn swapRow(self: Mat, row1: usize, row2: usize) !void {
+    pub fn swapRow(self: Mat, row1: usize, row2: usize) MatError!void {
         if (row1 >= self.rows or row2 >= self.rows) return MatError.IndexOutOfBounds;
         const r1 = self.get_row(row1);
         const r2 = self.get_row(row2);
@@ -322,12 +325,13 @@ pub const Mat = struct {
     }
 
     /// Returns the Norm_1 (max coloumn sum) of the matrix
-    pub fn norm1(self: Mat) !f64 {
+    pub fn norm1(self: Mat) f64 {
         var max_sum: f64 = 0.0;
         for (0..self.cols) |c| {
             var col_sum: f64 = 0.0;
             for (0..self.rows) |r| {
-                col_sum += try self.at(r, c);
+                // In-bounds by loop construction.
+                col_sum += self.atUnsafe(r, c);
             }
             if (col_sum > max_sum) max_sum = col_sum;
         }
@@ -335,13 +339,13 @@ pub const Mat = struct {
     }
 
     /// Returns a matrix which is a deep copy of itself
-    pub fn clone(self: Mat) !Mat {
+    pub fn clone(self: Mat) std.mem.Allocator.Error!Mat {
         const data = try self.alloc.dupe(f64, self.data);
         return .{ .alloc = self.alloc, .rows = self.rows, .cols = self.cols, .data = data };
     }
 
     /// C = A + B, written into caller-provided 'out'.
-    pub fn addInto(self: Mat, toAdd: Mat, out: Mat) !void {
+    pub fn addInto(self: Mat, toAdd: Mat, out: Mat) MatError!void {
         if (self.rows != toAdd.rows or self.cols != toAdd.cols) return MatError.SizeMismatch;
         if (out.rows != self.rows or out.cols != self.cols) return MatError.SizeMismatch;
         for (out.data, self.data, toAdd.data) |*o, a, b| o.* = a + b;
@@ -353,7 +357,7 @@ pub const Mat = struct {
     /// C = A + B, where A -> self and B -> toAdd.
     ///
     /// See .addInPlace() for no return.
-    pub fn add(self: Mat, toAdd: Mat) !Mat {
+    pub fn add(self: Mat, toAdd: Mat) (MatError || std.mem.Allocator.Error)!Mat {
         const r = self.rows;
         const c = self.cols;
         if (r != toAdd.rows or c != toAdd.cols) return MatError.SizeMismatch;
@@ -373,7 +377,7 @@ pub const Mat = struct {
     /// With contiguous storage the whole matrix is one flat slice, so the
     /// adds are direct 8-lane vector loads/stores over the full data,
     /// not per-row gathers. The tail is done in non-SIMD.
-    pub fn addSIMD(self: Mat, toAdd: Mat) !Mat {
+    pub fn addSIMD(self: Mat, toAdd: Mat) (MatError || std.mem.Allocator.Error)!Mat {
         if (self.rows != toAdd.rows or self.cols != toAdd.cols) return MatError.SizeMismatch;
         const retMat = try Mat.init(self.alloc, self.rows, self.cols);
 
@@ -400,7 +404,7 @@ pub const Mat = struct {
     ///
     /// See .add() to return a matrix with the result,
     /// leaving A & B unchanged.
-    pub fn addInPlace(self: Mat, toAdd: Mat) !void {
+    pub fn addInPlace(self: Mat, toAdd: Mat) MatError!void {
         const r = self.rows;
         const c = self.cols;
         if (r != toAdd.rows or c != toAdd.cols) return MatError.SizeMismatch;
@@ -415,7 +419,7 @@ pub const Mat = struct {
     /// C = A - B, where A -> self and B is toSub.
     ///
     /// See .subInPlace() for no return.
-    pub fn sub(self: Mat, toSub: Mat) !Mat {
+    pub fn sub(self: Mat, toSub: Mat) (MatError || std.mem.Allocator.Error)!Mat {
         const r = self.rows;
         const c = self.cols;
         if (r != toSub.rows or c != toSub.cols) return MatError.SizeMismatch;
@@ -433,7 +437,7 @@ pub const Mat = struct {
     ///
     /// See .sub() for returning the result,
     /// leaving A & B unchanged.
-    pub fn subInPlace(self: Mat, toSub: Mat) !void {
+    pub fn subInPlace(self: Mat, toSub: Mat) MatError!void {
         const r = self.rows;
         const c = self.cols;
         if (r != toSub.rows or c != toSub.cols) return MatError.SizeMismatch;
@@ -445,7 +449,7 @@ pub const Mat = struct {
     /// Returns the trace of the matrix
     ///
     /// Must be square
-    pub fn trace(self: Mat) !f64 {
+    pub fn trace(self: Mat) MatError!f64 {
         if (self.rows != self.cols) return MatError.BadShape;
         var tr: f64 = 0.0;
         for (0..self.rows) |i| {
@@ -471,7 +475,7 @@ pub const Mat = struct {
 /// Deep copies the values from the 'from' matrix to the 'to' matrix
 ///
 /// The recipient matrix must be >= the 'from' matrix.
-pub fn copyMat(from: Mat, to: Mat) !void {
+pub fn copyMat(from: Mat, to: Mat) MatError!void {
     if (to.cols < from.cols or to.rows < from.rows) return MatError.SizeMismatch;
     for (0..from.rows) |r| {
         @memcpy(to.get_row(r)[0..from.cols], from.get_row(r));
@@ -481,7 +485,7 @@ pub fn copyMat(from: Mat, to: Mat) !void {
 /// Returns a new matrix that is the transpose of 'self'
 ///
 /// Works for any matrix.
-pub fn transpose(self: Mat, alloc: std.mem.Allocator) !Mat {
+pub fn transpose(self: Mat, alloc: std.mem.Allocator) (MatError || std.mem.Allocator.Error)!Mat {
     var retMat = try Mat.initZero(alloc, self.cols, self.rows);
     errdefer retMat.deinit();
 
@@ -499,13 +503,15 @@ pub fn transpose(self: Mat, alloc: std.mem.Allocator) !Mat {
 ///
 /// Returns the inverse of the matrix.
 ///
-/// Might fail if it reaches a divide by zero when row reducing or backsolving.
-/// Returns the matrix when this is hit, and writes a warning to console.
-// TODO: Should we error here? ^^^
-pub fn inverse(alloc: std.mem.Allocator, A: Mat) !Mat {
+/// Returns an InverseError.BadShape if A is not square.
+/// Returns an InverseError.Singular if it reaches a divide by zero
+/// when row reducing or backsolving.
+pub fn inverse(alloc: std.mem.Allocator, A: Mat) (InverseError || std.mem.Allocator.Error)!Mat {
+    if (A.rows != A.cols) return InverseError.BadShape;
     var mat_mod = try Mat.initZero(alloc, A.rows, A.cols * 2);
     defer mat_mod.deinit();
     var ret_mat = try Mat.initZero(alloc, A.rows, A.cols);
+    errdefer ret_mat.deinit();
 
     try copyMat(A, mat_mod);
     for (A.cols..A.cols * 2) |c| {
@@ -520,10 +526,7 @@ pub fn inverse(alloc: std.mem.Allocator, A: Mat) !Mat {
         var i: usize = c + 1;
         while (i < mat_mod.rows) : (i += 1) {
             const denom = try mat_mod.at(c, c);
-            if (denom == 0.00) {
-                std.log.warn("Divide by zero found during row reduction in inverse().\nReturning empty matrix.\n", .{});
-                return ret_mat;
-            }
+            if (denom == 0.00) return InverseError.Singular;
 
             const L = -(try mat_mod.at(i, c) / denom);
             for (c..mat_mod.cols) |col| {
@@ -540,10 +543,7 @@ pub fn inverse(alloc: std.mem.Allocator, A: Mat) !Mat {
         while (i > 0) {
             i -= 1;
             const denom = try mat_mod.at(c, c);
-            if (denom == 0.00) {
-                std.log.warn("Divide by zero found during backsolving in inverse().\nReturning empty matrix.\n", .{});
-                return ret_mat;
-            }
+            if (denom == 0.00) return InverseError.Singular;
 
             const L = -(try mat_mod.at(i, c) / denom);
             for (c..mat_mod.cols) |col| {
@@ -573,7 +573,7 @@ pub fn inverse(alloc: std.mem.Allocator, A: Mat) !Mat {
 /// Multiplies the two matrices by each other.
 ///
 /// Returns an MatError.Sizemismatch on failure.
-pub fn matMult(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
+pub fn matMult(alloc: std.mem.Allocator, left: Mat, right: Mat) (MatError || std.mem.Allocator.Error)!Mat {
     if (left.cols != right.rows) return MatError.SizeMismatch;
     const retMat: Mat = try Mat.initZero(alloc, left.rows, right.cols);
 
@@ -595,8 +595,8 @@ pub fn matMult(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
 }
 
 /// A (mxn) * x (n) -> out (mx1)
-pub fn matVec(alloc: std.mem.Allocator, A: Mat, x: Vec) !Vec {
-    if (A.cols != x.len()) return err_mod.Common.SizeMismatch;
+pub fn matVec(alloc: std.mem.Allocator, A: Mat, x: Vec) (MatError || std.mem.Allocator.Error)!Vec {
+    if (A.cols != x.len()) return MatError.SizeMismatch;
     var out = try Vec.initZero(alloc, A.rows, true);
     for (0..A.rows) |i| {
         var s: f64 = 0;
@@ -613,7 +613,7 @@ pub fn matVec(alloc: std.mem.Allocator, A: Mat, x: Vec) !Vec {
 /// slice loads. The tail is done in non-SIMD.
 ///
 /// Returns an MatError.SizeMismatch on failure.
-pub fn matMultSIMD(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
+pub fn matMultSIMD(alloc: std.mem.Allocator, left: Mat, right: Mat) (MatError || std.mem.Allocator.Error)!Mat {
     if (left.cols != right.rows) return MatError.SizeMismatch;
     var retMat: Mat = try Mat.init(alloc, left.rows, right.cols);
     // In case of error, we need to deinit the matrix
@@ -662,8 +662,9 @@ pub fn matMultSIMD(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
 ///
 /// Returns exp(A).
 ///
-/// On Failure: returns either a MatError, VecError or OutOfMemory error.
-pub fn expm(alloc: std.mem.Allocator, A: Mat) !Mat {
+/// On Failure: returns an ExpmError (shape errors, a singular Pade
+/// system, or OutOfMemory).
+pub fn expm(alloc: std.mem.Allocator, A: Mat) ExpmError!Mat {
 
     // We  use an Arena allocator since these live short and
     // Die together.
@@ -673,7 +674,7 @@ pub fn expm(alloc: std.mem.Allocator, A: Mat) !Mat {
     // Taken from scipy.
     if (A.rows != A.cols) return MatError.BadShape;
     const THETA_13: f64 = 5.371920351148152;
-    const norm = try A.norm1();
+    const norm = A.norm1();
 
     const n = A.rows; // Square matrix
     var s: u32 = 0;
@@ -735,7 +736,7 @@ pub fn charPoly(
     alloc: std.mem.Allocator,
     A: Mat,
     coeffs: []f64,
-) !void {
+) (MatError || std.mem.Allocator.Error)!void {
     if (A.rows != A.cols) return MatError.BadShape;
     if (coeffs.len < A.rows + 1) return MatError.SizeMismatch;
     const n = A.rows;
@@ -853,7 +854,7 @@ fn pade13(alloc: std.mem.Allocator, As: Mat, A2: Mat, A4: Mat, A6: Mat, U: Mat, 
 /// are only alloced one at a time.
 ///
 /// The Matrix must be square.
-pub fn determinant(alloc: std.mem.Allocator, mat: Mat) !f64 {
+pub fn determinant(alloc: std.mem.Allocator, mat: Mat) (MatError || std.mem.Allocator.Error)!f64 {
     if (mat.rows != mat.cols) return MatError.BadShape;
     const n = mat.rows;
     if (n == 0) return 1.0;
@@ -935,8 +936,9 @@ fn makeMinor(alloc: std.mem.Allocator, mat: Mat, skip_row: usize, skip_col: usiz
 pub fn isLowerTriangular(A: Mat, tolerance: f64) bool {
     for (0..A.rows) |r| {
         for (r + 1..A.cols) |c| {
-            if (@abs(try A.at(r, c)) > tolerance) {
-                if (@abs(@abs(try A.at(r, c)) - tolerance) <= 1e-10) {
+            // In-bounds by loop construction.
+            if (@abs(A.atUnsafe(r, c)) > tolerance) {
+                if (@abs(@abs(A.atUnsafe(r, c)) - tolerance) <= 1e-10) {
                     std.log.warn("isLowerTriangular| Difference between 'tolerance' and matrix values is <= 1e-10. \n", .{});
                 }
                 return false;
@@ -960,8 +962,9 @@ pub fn isLowerTriangular(A: Mat, tolerance: f64) bool {
 pub fn isUpperTriangular(A: Mat, tolerance: f64) bool {
     for (0..A.rows) |r| {
         for (0..r) |c| {
-            if (@abs(try A.at(r, c)) > tolerance) {
-                if (@abs(@abs(try A.at(r, c)) - tolerance) <= 1e-10) {
+            // In-bounds by loop construction.
+            if (@abs(A.atUnsafe(r, c)) > tolerance) {
+                if (@abs(@abs(A.atUnsafe(r, c)) - tolerance) <= 1e-10) {
                     std.log.warn("isUpperTriangular| Difference between 'tolerance' and matrix values is <= 1e-10. \n", .{});
                 }
                 return false;
@@ -1078,6 +1081,20 @@ test "Matrix: Test" {
     try std.testing.expectApproxEqAbs(-@sin(3.0), try A_skewExpm.at(2, 3), 1e-8);
     try std.testing.expectApproxEqAbs(@sin(3.0), try A_skewExpm.at(3, 2), 1e-8);
     try std.testing.expectApproxEqAbs(@cos(3.0), try A_skewExpm.at(3, 3), 1e-8);
+}
+
+test "inverse: singular matrix -> Singular, non-square -> BadShape" {
+    const alloc = std.testing.allocator;
+
+    var S = try Mat.initZero(alloc, 2, 2);
+    defer S.deinit();
+    try S.setRow(0, [_]f64{ 1.0, 2.0 });
+    try S.setRow(1, [_]f64{ 2.0, 4.0 });
+    try std.testing.expectError(InverseError.Singular, inverse(alloc, S));
+
+    var R = try Mat.initZero(alloc, 2, 3);
+    defer R.deinit();
+    try std.testing.expectError(InverseError.BadShape, inverse(alloc, R));
 }
 
 test "Mat.init / initZero / initIdentity: OOM does not leak" {

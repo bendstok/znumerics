@@ -8,6 +8,10 @@ const Vec = vec.Vec;
 const Mat = mat.Mat;
 const Complex = std.math.Complex(f64);
 
+pub const EigenError = error{
+    NotSquare,
+} || err_mod.Common;
+
 const arnoldi_result = struct {
     Q: Mat, // Coloumns are an orthonormal basis of the Krylov subspace
     h: Mat, // A on basis Q. It is upper Hessenberg.
@@ -24,7 +28,7 @@ const arnoldi_result = struct {
 ///
 /// Stops early if the Krylov subspace becomes invariant (a "lucky breakdown"),
 /// producing fewer than 'iter' basis vectors.
-pub fn arnoldi_iteration(A: Mat, init_vec: Vec, iter: usize, alloc: std.mem.Allocator) !arnoldi_result {
+pub fn arnoldi_iteration(A: Mat, init_vec: Vec, iter: usize, alloc: std.mem.Allocator) (err_mod.Common || std.mem.Allocator.Error)!arnoldi_result {
     const eps: f64 = 1e-12;
     var res: arnoldi_result = undefined;
     var h = try Mat.initZero(alloc, iter + 1, iter);
@@ -128,9 +132,9 @@ fn rotCols(H: Mat, i: usize, g: Givens, m: usize) void {
 /// Stops once every subdiagonal has deflated, or after 'max_iter' sweeps
 /// (best effort: the current diagonal is returned either way).
 ///
-/// Returns a BadShape error if A is not square.
-pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]f64 {
-    if (A.rows != A.cols) return err_mod.Common.BadShape;
+/// Returns an EigenError.NotSquare if A is not square.
+pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]f64 {
+    if (A.rows != A.cols) return EigenError.NotSquare;
     const n = A.rows;
 
     var Ak = try A.clone();
@@ -240,9 +244,9 @@ pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
 /// Stops once every block has deflated, or after 'max_iter' sweeps
 /// (best effort: the remaining diagonal/blocks are extracted either way).
 ///
-/// Returns a BadShape error if A is not square.
-pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]Complex {
-    if (A.rows != A.cols) return err_mod.Common.BadShape;
+/// Returns an EigenError.NotSquare if A is not square.
+pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]Complex {
+    if (A.rows != A.cols) return EigenError.NotSquare;
     const n = A.rows;
 
     var Ak = try A.clone();
@@ -404,9 +408,9 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
 /// A fixed all-ones start vector is used, so for an input it fails to excite
 /// the Arnoldi process may break down early and return only a partial spectrum.
 ///
-/// Returns a BadShape error if A is not square.
-pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]f64 {
-    if (A.rows != A.cols) return err_mod.Common.BadShape;
+/// Returns an EigenError.NotSquare if A is not square.
+pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]f64 {
+    if (A.rows != A.cols) return EigenError.NotSquare;
     const m = A.rows;
 
     // Starting vector b = ones: has a component along every eigenvector for a
@@ -446,9 +450,9 @@ pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
 /// A fixed all-ones start vector is used, so for an input it fails to excite
 /// the Arnoldi process may break down early and return only a partial spectrum.
 ///
-/// Returns a BadShape error if A is not square.
-pub fn eigenvaluesComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]Complex {
-    if (A.rows != A.cols) return err_mod.Common.BadShape;
+/// Returns an EigenError.NotSquare if A is not square.
+pub fn eigenvaluesComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]Complex {
+    if (A.rows != A.cols) return EigenError.NotSquare;
     const m = A.rows;
 
     // Starting vector b = ones: has a component along every eigenvector for a
@@ -489,9 +493,9 @@ pub fn eigenvaluesComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
 /// Stops once every subdiagonal has deflated, or after 'max_iter' sweeps
 /// (best effort: the current diagonal is returned either way).
 ///
-/// Returns a BadShape error if A is not square.
-pub fn qrAlgorithm_LEGACY(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) ![]f64 {
-    if (A.rows != A.cols) return err_mod.Common.BadShape;
+/// Returns an EigenError.NotSquare if A is not square.
+pub fn qrAlgorithm_LEGACY(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || qr_mod.QRError || std.mem.Allocator.Error)![]f64 {
+    if (A.rows != A.cols) return EigenError.NotSquare;
     const n = A.rows;
 
     var Ak = try A.clone();

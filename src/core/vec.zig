@@ -2,7 +2,7 @@ const std = @import("std");
 const mat = @import("mat.zig");
 const err_mod = @import("../error.zig");
 
-pub const VecError = error{} || err_mod.Common;
+pub const VecError = err_mod.Common;
 
 /// The vector type.
 /// Note that all vectors are presumed row vectors.
@@ -13,7 +13,7 @@ pub const Vec = struct {
     data: []f64,
     colvec: bool,
 
-    pub fn init(alloc: std.mem.Allocator, size: usize, colvec: bool) !Vec {
+    pub fn init(alloc: std.mem.Allocator, size: usize, colvec: bool) (VecError || std.mem.Allocator.Error)!Vec {
         if (size == 0) {
             return VecError.Empty;
         }
@@ -23,7 +23,7 @@ pub const Vec = struct {
         return .{ .alloc = alloc, .data = @constCast(data), .colvec = colvec };
     }
 
-    pub fn initZero(alloc: std.mem.Allocator, size: usize, colvec: bool) !Vec {
+    pub fn initZero(alloc: std.mem.Allocator, size: usize, colvec: bool) (VecError || std.mem.Allocator.Error)!Vec {
         if (size == 0) {
             return VecError.Empty;
         }
@@ -73,13 +73,13 @@ pub const Vec = struct {
     /// Returns the value currently stored at idx.
     ///
     /// Does bounds checks, returns a VecError.IndexOutOfBounds on failure.
-    pub fn at(self: Vec, idx: usize) !f64 {
+    pub fn at(self: Vec, idx: usize) VecError!f64 {
         if (idx >= self.len()) return VecError.IndexOutOfBounds;
         return self.data[idx];
     }
 
     /// Synonymys with .atSafe()
-    pub fn get(self: Vec, idx: usize) !f64 {
+    pub fn get(self: Vec, idx: usize) VecError!f64 {
         return (try at(self, idx));
     }
 
@@ -91,7 +91,7 @@ pub const Vec = struct {
     /// Set one individual index to a value.
     ///
     /// Does bounds checks. Returns a VecError.IndexOutOfBounds on failure.
-    pub fn set(self: Vec, idx: usize, val: f64) !void {
+    pub fn set(self: Vec, idx: usize, val: f64) VecError!void {
         if (idx >= self.len()) return VecError.IndexOutOfBounds;
         self.data[idx] = val;
     }
@@ -150,7 +150,7 @@ pub const Vec = struct {
     /// VecError.SizeMismatch on size failure.
     ///
     /// cons must be of type: f64, comptime_float, [_]f64 or []f64.
-    pub fn setAll(self: Vec, cons: anytype) !void {
+    pub fn setAll(self: Vec, cons: anytype) VecError!void {
         const T = @TypeOf(cons);
 
         switch (@typeInfo(T)) {
@@ -178,10 +178,11 @@ pub const Vec = struct {
         }
     }
 
-    pub fn printVec(self: Vec) !void {
+    pub fn printVec(self: Vec) error{NoSpaceLeft}!void {
         for (0..self.len()) |idx| {
             //std.debug.print("c={}", .{c});
-            const val: f64 = try self.at(idx);
+            // In-bounds by loop construction.
+            const val: f64 = self.atUnsafe(idx);
             var tmp: [64]u8 = undefined;
             const s = try std.fmt.bufPrint(&tmp, "{:.3}", .{val});
             std.debug.print("{s: >10} ", .{s});
@@ -193,7 +194,7 @@ pub const Vec = struct {
     /// Expands the vector, and fills the new space with 'fill'.
     ///
     /// Returns an error.OutOfMemory or VecError.Empty (if new_len == 0) on failure.
-    pub fn resize(self: *Vec, new_len: usize, fill: f64) !void {
+    pub fn resize(self: *Vec, new_len: usize, fill: f64) (VecError || std.mem.Allocator.Error)!void {
         if (new_len == 0) return VecError.Empty;
         if (new_len == self.data.len) return;
         const old_len = self.len();
@@ -210,7 +211,7 @@ pub const Vec = struct {
     /// X = X + Y
     ///
     /// Only takes vectors of same size.
-    pub fn addInPlace(self: Vec, ToAdd: Vec) !void {
+    pub fn addInPlace(self: Vec, ToAdd: Vec) VecError!void {
         if (self.len() != ToAdd.len()) return VecError.SizeMismatch;
         for (0..self.len()) |idx| {
             self.setUnsafe(idx, self.atUnsafe(idx) + ToAdd.atUnsafe(idx));
@@ -222,7 +223,7 @@ pub const Vec = struct {
     /// X = X - Y
     ///
     /// Only takes vectors of same size.
-    pub fn subInPlace(self: Vec, toSub: Vec) !void {
+    pub fn subInPlace(self: Vec, toSub: Vec) VecError!void {
         if (self.len() != toSub.len()) return VecError.SizeMismatch;
         for (0..self.len()) |idx| {
             self.setUnsafe(idx, self.atUnsafe(idx) - toSub.atUnsafe(idx));
@@ -235,7 +236,7 @@ pub const Vec = struct {
 /// Note that: a^T * b == b^T * a. (All vectors unless otherwise stated, are row vectors).
 ///
 /// Returns the matrix.
-pub fn vecMult(alloc: std.mem.Allocator, left: Vec, right: Vec) !mat.Mat {
+pub fn vecMult(alloc: std.mem.Allocator, left: Vec, right: Vec) (VecError || std.mem.Allocator.Error)!mat.Mat {
     if (!left.colvec) return VecError.BadShape;
     if (left.len() != right.len()) return VecError.SizeMismatch;
     var returnMat = try mat.Mat.initZero(alloc, left.len(), left.len());
@@ -254,7 +255,7 @@ pub fn vecMult(alloc: std.mem.Allocator, left: Vec, right: Vec) !mat.Mat {
 /// Computes the 3D cross product vector from two base vectors.
 ///
 /// Returns the produced vector.
-pub fn crossProd3d(alloc: std.mem.Allocator, left: Vec, right: Vec) !Vec {
+pub fn crossProd3d(alloc: std.mem.Allocator, left: Vec, right: Vec) (VecError || std.mem.Allocator.Error)!Vec {
     if (left.len() != 3 or right.len() != 3) return VecError.BadShape;
     // Can use unsafe since we explicitly know the length.
     const s1 = (left.atUnsafe(1)) * (right.atUnsafe(2)) + (left.atUnsafe(2)) * (right.atUnsafe(1));
@@ -278,7 +279,7 @@ pub fn crossProd3d(alloc: std.mem.Allocator, left: Vec, right: Vec) !Vec {
 /// Does not support:
 /// - start == end
 /// - steps == 0
-pub fn linspace(alloc: std.mem.Allocator, start: f64, end: f64, steps: usize, includeEndPoint: bool) !Vec {
+pub fn linspace(alloc: std.mem.Allocator, start: f64, end: f64, steps: usize, includeEndPoint: bool) (VecError || std.mem.Allocator.Error)!Vec {
     if (steps == 0) return VecError.BadShape;
 
     var retVec = try Vec.initZero(alloc, steps, false);
@@ -307,7 +308,7 @@ pub fn linspace(alloc: std.mem.Allocator, start: f64, end: f64, steps: usize, in
 /// Computes the dot product between two vectors. These have to both row vectors.
 ///
 /// Returns the value.
-pub fn dot(left: Vec, right: Vec) !f64 {
+pub fn dot(left: Vec, right: Vec) VecError!f64 {
     if (left.len() != right.len()) return VecError.SizeMismatch;
     if (left.colvec and right.colvec) return VecError.BadShape;
     var res: f64 = 0;

@@ -9,7 +9,7 @@ const Mat = mat.Mat;
 pub const LTIError = error{
     DenominatorLeadingZero,
     AlreadyDiscrete,
-    AlreadyContinuous,
+    NotImplemented,
 } || err_mod.Common;
 
 pub const LTIDomain = enum { Continuous, Discrete };
@@ -39,7 +39,7 @@ pub const StateSpace = struct {
     /// Inits all the members to zero, size n.
     ///
     /// Note that dt = 0.0
-    pub fn initContinuous(alloc: std.mem.Allocator, n: usize) !StateSpace {
+    pub fn initContinuous(alloc: std.mem.Allocator, n: usize) (LTIError || std.mem.Allocator.Error)!StateSpace {
         var A = try Mat.initZero(alloc, n, n);
         errdefer A.deinit();
         var B = try Vec.initZero(alloc, n, true);
@@ -57,7 +57,7 @@ pub const StateSpace = struct {
         return .{ .A = A, .B = B, .C = C, .D = D, .alloc = alloc, .domain = LTIDomain.Continuous, .dt = 0.0 };
     }
 
-    pub fn initDiscrete(alloc: std.mem.Allocator, n: usize, dt: f64) !StateSpace {
+    pub fn initDiscrete(alloc: std.mem.Allocator, n: usize, dt: f64) (LTIError || std.mem.Allocator.Error)!StateSpace {
         var A = try Mat.initZero(alloc, n, n);
         errdefer A.deinit();
         var B = try Vec.initZero(alloc, n, true);
@@ -100,7 +100,7 @@ pub const TransferFunction = struct {
     dt: f64,
     alloc: std.mem.Allocator,
 
-    pub fn initZero(alloc: std.mem.Allocator, size: usize, domain_in: LTIDomain, dt_in: f64) !TransferFunction {
+    pub fn initZero(alloc: std.mem.Allocator, size: usize, domain_in: LTIDomain, dt_in: f64) (LTIError || std.mem.Allocator.Error)!TransferFunction {
         if (size == 0) return LTIError.BadShape;
         const num = try alloc.alloc(f64, size);
         errdefer alloc.free(num);
@@ -111,7 +111,7 @@ pub const TransferFunction = struct {
         return .{ .num = num, .den = den, .domain = domain_in, .dt = dt_in, .alloc = alloc };
     }
 
-    pub fn initDiscrete(alloc: std.mem.Allocator, num_in: []const f64, den_in: []const f64, dt: f64) !TransferFunction {
+    pub fn initDiscrete(alloc: std.mem.Allocator, num_in: []const f64, den_in: []const f64, dt: f64) (LTIError || std.mem.Allocator.Error)!TransferFunction {
         if (num_in.len == 0 or den_in.len == 0) return LTIError.BadShape;
         const num = try alloc.alloc(f64, num_in.len);
         errdefer alloc.free(num);
@@ -122,7 +122,7 @@ pub const TransferFunction = struct {
         return .{ .num = num, .den = den, .domain = LTIDomain.Discrete, .dt = dt, .alloc = alloc };
     }
 
-    pub fn initContinuous(alloc: std.mem.Allocator, num_in: []const f64, den_in: []const f64) !TransferFunction {
+    pub fn initContinuous(alloc: std.mem.Allocator, num_in: []const f64, den_in: []const f64) (LTIError || std.mem.Allocator.Error)!TransferFunction {
         if (num_in.len == 0 or den_in.len == 0) return LTIError.BadShape;
         const num = try alloc.alloc(f64, num_in.len);
         errdefer alloc.free(num);
@@ -139,17 +139,17 @@ pub const TransferFunction = struct {
         self.* = undefined;
     }
 
-    pub fn setNum(self: TransferFunction, idx: usize, val: f64) !void {
+    pub fn setNum(self: TransferFunction, idx: usize, val: f64) LTIError!void {
         if (idx >= self.num.len) return LTIError.IndexOutOfBounds;
         self.num[idx] = val;
     }
 
-    pub fn setDen(self: TransferFunction, idx: usize, val: f64) !void {
+    pub fn setDen(self: TransferFunction, idx: usize, val: f64) LTIError!void {
         if (idx >= self.den.len) return LTIError.IndexOutOfBounds;
         self.den[idx] = val;
     }
 
-    pub fn padNumToDen(self: *TransferFunction) !void {
+    pub fn padNumToDen(self: *TransferFunction) std.mem.Allocator.Error!void {
         if (self.num.len >= self.den.len) return;
         const pad = self.den.len - self.num.len;
         var buf = try self.alloc.alloc(f64, self.den.len);
@@ -159,16 +159,17 @@ pub const TransferFunction = struct {
         self.num = buf;
     }
 
-    pub fn toStateSpace(self: TransferFunction) !StateSpace {
+    /// Returns an LTIError.NotImplemented for discrete transfer
+    /// functions until discrete tf2ss is implemented.
+    pub fn toStateSpace(self: TransferFunction) (LTIError || std.mem.Allocator.Error)!StateSpace {
         switch (self.domain) {
             .Continuous => {
                 return try tf2ss(self.alloc, self.num, self.den);
             },
             .Discrete => {
                 // TODO: Implement this.
-                @compileError(".toStateSpace| Not implemented for Discrete Transferfunctions \n");
+                return LTIError.NotImplemented;
             },
-            else => unreachable,
         }
     }
 };
@@ -188,7 +189,7 @@ pub const TransferFunction = struct {
 /// num =  [2.0, 1.0] & den = [3.0, 2.0, 1.0]
 ///
 /// Returns a StateSpace representing the transfer function.
-pub fn tf2ss(alloc: std.mem.Allocator, num: []const f64, den: []const f64) !StateSpace {
+pub fn tf2ss(alloc: std.mem.Allocator, num: []const f64, den: []const f64) (LTIError || std.mem.Allocator.Error)!StateSpace {
     if (num.len > den.len) return LTIError.BadShape;
     const k = den.len;
     if (den[0] == 0.0) return LTIError.DenominatorLeadingZero;
@@ -255,7 +256,7 @@ pub fn cont2discrete(
     alloc: std.mem.Allocator,
     SS: *StateSpace,
     dt: f64,
-) !void {
+) (LTIError || mat.ExpmError)!void {
     const n = SS.A.rows;
     const m = SS.A.rows + 1;
     if (SS.domain == LTIDomain.Discrete) return LTIError.AlreadyDiscrete;
@@ -295,7 +296,7 @@ pub fn ss2tf(
     alloc: std.mem.Allocator,
     SS: StateSpace,
     dt: f64,
-) !TransferFunction {
+) (LTIError || std.mem.Allocator.Error)!TransferFunction {
     const n = SS.A.rows;
 
     const polyA = try alloc.alloc(f64, n + 1);
@@ -328,7 +329,7 @@ pub fn ss2tf(
     return TF;
 }
 
-pub fn cont2discrete_tf(alloc: std.mem.Allocator, TF: *TransferFunction, dt: f64) !void {
+pub fn cont2discrete_tf(alloc: std.mem.Allocator, TF: *TransferFunction, dt: f64) (LTIError || mat.ExpmError)!void {
     const n = TF.den.len - 1;
     if (n == 0 or TF.num.len > TF.den.len) {
         return LTIError.BadShape;

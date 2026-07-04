@@ -6,15 +6,22 @@ const vec = @import("../core/vec.zig");
 const Mat = mat.Mat;
 const Vec = vec.Vec;
 
+pub const QRError = error{
+    NotSquare,
+} || err_mod.Common;
+
 /// QR Decomposes matrix A into [Q, R].
 ///
 /// Uses the Householder Reflections strategy.
 ///
 /// Returns [Q , R] on success.
-pub fn qrDecomposition(alloc: std.mem.Allocator, A: Mat) ![2]Mat {
-    if (A.rows != A.cols) return err_mod.Common.BadShape;
+///
+/// Returns a QRError.NotSquare if A is not square, and a
+/// QRError.BadShape if A is 1x1 (nothing to decompose).
+pub fn qrDecomposition(alloc: std.mem.Allocator, A: Mat) (QRError || std.mem.Allocator.Error)![2]Mat {
+    if (A.rows != A.cols) return QRError.NotSquare;
     const m = A.rows;
-    if (m <= 1) return err_mod.Common.BadShape;
+    if (m <= 1) return QRError.BadShape;
 
     var Q = try Mat.initIdentity(alloc, m, m);
     errdefer Q.deinit();
