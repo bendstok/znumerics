@@ -48,6 +48,29 @@ def fill_symmetric_np(n):
     return m
 
 
+def fill_complex_spectrum_np(n):
+    # Same as fillComplexSpectrum in benchmarks/eigen.zig: scaled 2x2 rotation
+    # blocks on the diagonal, deterministic filler above. Block triangular, so
+    # the spectrum is exactly n/2 complex conjugate pairs.
+    m = np.zeros((n, n))
+    k = 0
+    while k + 1 < n:
+        idx = k // 2
+        r = 1.0 + 0.3 * idx
+        th = 0.4 + 0.15 * idx
+        m[k, k] = r * np.cos(th)
+        m[k, k + 1] = -r * np.sin(th)
+        m[k + 1, k] = r * np.sin(th)
+        m[k + 1, k + 1] = r * np.cos(th)
+        k += 2
+    if n % 2 == 1:
+        m[n - 1, n - 1] = 0.5
+    for i in range(n):
+        for j in range(i + 2, n):
+            m[i, j] = ((i * 131 + j * 17) % 100) * 0.01
+    return m
+
+
 def ns_per_iter(ns_total, iters):
     return ns_total / iters
 
@@ -178,8 +201,36 @@ def bench_eigen():
     print(f"  numpy eigvals  : {ns_gen} ns total, {ns_per_iter(ns_gen, reps):.0f} ns/call")
 
 
+# ------------------------------------------------- complex eigenvalues
+
+
+def bench_eigen_complex():
+    N = 20
+    reps = 25
+
+    A = fill_complex_spectrum_np(N)
+
+    # Warmup (matches the 3 warmup rounds in qrComplexBench)
+    for _ in range(3):
+        np.linalg.eigvals(A)
+
+    s = 0.0
+    t0 = time.perf_counter_ns()
+    for _ in range(reps):
+        e = np.linalg.eigvals(A)
+        s += e.real.sum()
+    ns = time.perf_counter_ns() - t0
+
+    # Sanity: the eigenvalue sum equals the trace, conjugate pairs cancel.
+    assert abs(s / reps - np.trace(A)) < 1e-8 * abs(np.trace(A))
+
+    print(f"\n[bench] Complex eigenvalues, non-symmetric {N}x{N} (10 conjugate pairs), reps={reps}")
+    print(f"  numpy eigvals  : {ns} ns total, {ns_per_iter(ns, reps):.0f} ns/call")
+
+
 if __name__ == "__main__":
     print(f"numpy {np.__version__}")
     bench_add()
     bench_matmul()
     bench_eigen()
+    bench_eigen_complex()

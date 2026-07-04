@@ -30,9 +30,13 @@ Compared against Python on the same machine (`python benchmarks/bench.py`), ns/i
 | add 512x512 | 579,750 | 682,320 | 10,966,380 |
 | matmul 64x64 | 35,020 | 27,985 | 9,800,710 |
 | eigenvalues 20x20 | 15,084 | 14,264 | - |
+| complex eigenvalues 20x20 | 3,664 | 11,768 | - |
 
 NB: addSIMD is approx equal to add (the plain loop auto-vectorizes),
 matMultSIMD is approx 1.8x faster than matMult.
+
+NB: complex eigenvalues are approx 3x faster than numpy here, but this is with
+matrices that are small. Expect that the gap shrinks with size.
 
 ## Run example
 ```sh
@@ -67,6 +71,7 @@ defer eA.deinit();
 
 ### Vectors
 ```zig
+// (alloc, start, end, steps, include endpoint)
 var v = try znum.vec.linspace(alloc, 0.0, 1.0, 5, true);
 defer v.deinit();
 
@@ -79,12 +84,18 @@ const n = v.norm();
 
 ### Eigenvalues
 ```zig
-// Real spectrum only (e.g. symmetric matrices)
+// Real spectrum (e.g. symmetric matrices)
+// (alloc, A, max QR sweeps, deflation tolerance, optional out: sweep count)
 var it: usize = 0;
 const eigs = try znum.eigenvalues(alloc, A, 1000, 1e-12, &it);
 defer alloc.free(eigs);
 
-// also: znum.eigen.qrAlgorithm (shifted QR directly on the dense matrix),
+// Complex spectrum: returns []std.math.Complex(f64). Same inputs, pass
+// null to skip the sweep count.
+const ceigs = try znum.eigenvaluesComplex(alloc, A, 1000, 1e-12, null);
+defer alloc.free(ceigs);
+
+// also: znum.eigen.qrAlgorithm / qrAlgorithmComplex (shifted QR directly on the dense matrix),
 // znum.eigen.arnoldi_iteration (Krylov basis + Hessenberg projection)
 ```
 
@@ -105,6 +116,7 @@ try ss.A.set(0, 0, -1.0);
 try ss.B.set(0, 1.0);
 
 var x = [_]f64{0.0};
+// One step: (state dim (comptime), system, state, input u, dt)
 x = znum.RK4(1, ss, x, 2.0, 1e-3);
 
 // also: znum.PID, znum.signal (tf2ss, ss2tf, cont2discrete)

@@ -99,3 +99,90 @@ pub fn qrDirectVsPipeline(alloc: std.mem.Allocator, io: std.Io) !void {
         },
     );
 }
+
+/// Deterministic non-symmetric fill with a known complex spectrum: scaled
+/// 2x2 rotation blocks on the diagonal (eigenvalues r*cos(t) ± i*r*sin(t),
+/// distinct moduli per block for reliable convergence) and deterministic
+/// filler above. Block triangular, so the spectrum is exactly the blocks'.
+fn fillComplexSpectrum(m: *Mat) void {
+    const n = m.rows;
+    m.setAll(0.0);
+    var k: usize = 0;
+    while (k + 1 < n) : (k += 2) {
+        const idx = @as(f64, @floatFromInt(k / 2));
+        const r = 1.0 + 0.3 * idx;
+        const th = 0.4 + 0.15 * idx;
+        m.setUnsafe(k, k, r * @cos(th));
+        m.setUnsafe(k, k + 1, -r * @sin(th));
+        m.setUnsafe(k + 1, k, r * @sin(th));
+        m.setUnsafe(k + 1, k + 1, r * @cos(th));
+    }
+    if (n % 2 == 1) m.setUnsafe(n - 1, n - 1, 0.5); // odd leftover: one real eigenvalue
+    // Filler above the blocks (does not change the spectrum)
+    for (0..n) |i| {
+        var j = i + 2;
+        while (j < n) : (j += 1) {
+            m.setUnsafe(i, j, @as(f64, @floatFromInt((i * 131 + j * 17) % 100)) * 0.01);
+        }
+    }
+}
+
+/// Times qrAlgorithmComplex on a dense non-symmetric matrix whose spectrum
+/// is 10 complex conjugate pairs. Compare against numpy's eigvals on the
+/// same matrix via benchmarks/bench.py.
+pub fn qrComplexBench(alloc: std.mem.Allocator, io: std.Io) !void {
+    const N: usize = 20;
+    const reps: usize = 25;
+    const max_iter: usize = 2000;
+    const tol: f64 = 1e-12;
+
+    var A = try Mat.initZero(alloc, N, N);
+    defer A.deinit();
+    fillComplexSpectrum(&A);
+
+    // Iteration count (one call).
+    var it: usize = 0;
+    {
+        const e = try znum.eigen.qrAlgorithmComplex(alloc, A, max_iter, tol, &it);
+        alloc.free(e);
+    }
+
+    // Warmup.
+    {
+        var w: usize = 0;
+        while (w < 3) : (w += 1) {
+            const e = try znum.eigen.qrAlgorithmComplex(alloc, A, max_iter, tol, null);
+            alloc.free(e);
+        }
+    }
+
+    var sum_re: f64 = 0.0;
+    var sum_im: f64 = 0.0;
+    const t0 = std.Io.Timestamp.now(io, .awake);
+    {
+        var k: usize = 0;
+        while (k < reps) : (k += 1) {
+            const e = try znum.eigen.qrAlgorithmComplex(alloc, A, max_iter, tol, null);
+            for (e) |z| {
+                sum_re += z.re;
+                sum_im += z.im;
+            }
+            alloc.free(e);
+        }
+    }
+    const ns: u64 = @intCast(t0.untilNow(io, .awake).toNanoseconds());
+    std.mem.doNotOptimizeAway(sum_re);
+    std.mem.doNotOptimizeAway(sum_im);
+
+    // Sanity: the eigenvalue sum equals the trace, conjugate pairs cancel.
+    const tr = try A.trace();
+    const reps_f = @as(f64, @floatFromInt(reps));
+    try std.testing.expectApproxEqAbs(tr * reps_f, sum_re, 1e-6 * @abs(tr) * reps_f);
+    try std.testing.expectApproxEqAbs(0.0, sum_im, 1e-6);
+
+    const per = @as(f64, @floatFromInt(ns)) / reps_f;
+    std.debug.print(
+        "\n[bench] Complex eigenvalues, non-symmetric {d}x{d} (10 conjugate pairs), reps={d}\n  qrAlgorithmComplex   : {d} iters, {d} ns total, {d} ns/call\n",
+        .{ N, N, reps, it, ns, per },
+    );
+}

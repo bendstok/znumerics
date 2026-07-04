@@ -17,6 +17,15 @@ fn report(label: []const u8, eigs: []const f64, iters: usize) void {
     std.debug.print("]\n", .{});
 }
 
+fn reportComplex(label: []const u8, eigs: []const std.math.Complex(f64)) void {
+    std.debug.print("{s}: [", .{label});
+    for (eigs, 0..) |e, i| {
+        if (i != 0) std.debug.print(", ", .{});
+        std.debug.print("{d:.4} {s} {d:.4}i", .{ e.re, if (e.im < 0) "-" else "+", @abs(e.im) });
+    }
+    std.debug.print("]\n", .{});
+}
+
 pub fn main() !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -116,5 +125,35 @@ pub fn main() !void {
         defer alloc.free(e_pipe);
         std.mem.sort(f64, e_pipe, {}, std.sort.desc(f64));
         report("  eigenvalues (Arnoldi -> QR)      ", e_pipe, it_pipe);
+    }
+
+    std.debug.print("\n=== Complex eigenvalues (real Schur form) ===\n\n", .{});
+
+    // 2x2 rotation matrix: eigenvalues cos(t) ± i*sin(t).
+    {
+        const t = std.math.pi / 4.0;
+        var A = try Mat.initZero(alloc, 2, 2);
+        defer A.deinit();
+        setMat(A, [_][2]f64{
+            .{ @cos(t), -@sin(t) },
+            .{ @sin(t), @cos(t) },
+        });
+        const eigs = try znum.eigen.qrAlgorithmComplex(alloc, A, 1000, 1e-12, null);
+        defer alloc.free(eigs);
+        reportComplex("2x2 rotation (pi/4)          (qrAlgorithmComplex)", eigs);
+    }
+
+    // Companion matrix of (x-1)(x^2-2x+5): eigenvalues 1, 1 ± 2i.
+    {
+        var A = try Mat.initZero(alloc, 3, 3);
+        defer A.deinit();
+        setMat(A, [_][3]f64{
+            .{ 3, -7, 5 },
+            .{ 1, 0, 0 },
+            .{ 0, 1, 0 },
+        });
+        const eigs = try znum.eigen.qrAlgorithmComplex(alloc, A, 1000, 1e-12, null);
+        defer alloc.free(eigs);
+        reportComplex("companion of (x-1)(x^2-2x+5) (qrAlgorithmComplex)", eigs);
     }
 }

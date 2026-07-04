@@ -20,6 +20,7 @@ pub const StateSpace = signal.StateSpace;
 pub const PID = control.PID_DEO_Sim;
 pub const RK4 = ode.RK4;
 pub const eigenvalues = eigen.eigenvalues;
+pub const eigenvaluesComplex = eigen.eigenvaluesComplex;
 
 test {
     _ = @import("core/vec.zig");

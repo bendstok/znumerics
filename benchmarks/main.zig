@@ -12,4 +12,5 @@ pub fn main(init: std.process.Init) !void {
     try matbench.matAddvsSIMDadd(alloc, io);
     try matbench.matMulvsSIMDmatMul(alloc, io);
     try eigbench.qrDirectVsPipeline(alloc, io);
+    try eigbench.qrComplexBench(alloc, io);
 }
