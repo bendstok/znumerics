@@ -34,20 +34,23 @@ pub fn arnoldi_iteration(A: Mat, init_vec: Vec, iter: usize, alloc: std.mem.Allo
     init_vec.normalize();
     try Q.setCol(0, init_vec.data); // Use the first vector as first Krylov vector
 
+    var v = try Vec.initZero(alloc, A.rows, true);
+    defer v.deinit();
+
     for (1..iter + 1) |k| {
-        var x = try Q.getCol(k - 1, alloc);
-        defer x.deinit();
-        var v = try mat.matVec(alloc, A, x); // Generate new candidate vector
-        defer v.deinit();
+        // v = A * Q[:, k-1]
+        for (0..A.rows) |i| {
+            var s: f64 = 0;
+            for (0..A.cols) |j| s += A.atUnsafe(i, j) * Q.atUnsafe(j, k - 1);
+            v.setUnsafe(i, s);
+        }
 
         for (0..k) |j| { // Subtract projections onto previous basis vectors
-            var cur_vec = try Q.getCol(j, alloc);
-            defer cur_vec.deinit();
-            v.colvec = false;
-            const proj = try vec.dot(cur_vec, v);
+            // proj = dot(Q[:, j], v)
+            var proj: f64 = 0;
+            for (0..A.cols) |i| proj += Q.atUnsafe(i, j) * v.atUnsafe(i);
             h.setUnsafe(j, k - 1, proj);
-            cur_vec.multConstUnsafe(proj);
-            try v.subInPlace(cur_vec);
+            for (0..A.cols) |i| v.setUnsafe(i, v.atUnsafe(i) - proj * Q.atUnsafe(i, j));
         }
 
         h.setUnsafe(k, k - 1, v.norm());

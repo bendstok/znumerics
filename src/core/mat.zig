@@ -340,6 +340,13 @@ pub const Mat = struct {
         return .{ .alloc = self.alloc, .rows = self.rows, .cols = self.cols, .data = data };
     }
 
+    /// C = A + B, written into caller-provided 'out'.
+    pub fn addInto(self: Mat, toAdd: Mat, out: Mat) !void {
+        if (self.rows != toAdd.rows or self.cols != toAdd.cols) return MatError.SizeMismatch;
+        if (out.rows != self.rows or out.cols != self.cols) return MatError.SizeMismatch;
+        for (out.data, self.data, toAdd.data) |*o, a, b| o.* = a + b;
+    }
+
     /// Adds the two matrices index by index
     /// and returns the result. The Matrices must be same size.
     ///
@@ -657,6 +664,12 @@ pub fn matMultSIMD(alloc: std.mem.Allocator, left: Mat, right: Mat) !Mat {
 ///
 /// On Failure: returns either a MatError, VecError or OutOfMemory error.
 pub fn expm(alloc: std.mem.Allocator, A: Mat) !Mat {
+
+    // We  use an Arena allocator since these live short and
+    // Die together.
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     // Taken from scipy.
     if (A.rows != A.cols) return MatError.BadShape;
     const THETA_13: f64 = 5.371920351148152;
@@ -676,19 +689,19 @@ pub fn expm(alloc: std.mem.Allocator, A: Mat) !Mat {
 
     // A2, A4, A6
 
-    var A2 = try matMult(alloc, As, As);
+    var A2 = try matMult(arena, As, As);
     defer A2.deinit();
-    var A4 = try matMult(alloc, A2, A2);
+    var A4 = try matMult(arena, A2, A2);
     defer A4.deinit();
-    var A6 = try matMult(alloc, A4, A2);
+    var A6 = try matMult(arena, A4, A2);
     defer A6.deinit();
 
-    var U = try Mat.initZero(alloc, n, n);
+    var U = try Mat.initZero(arena, n, n);
     defer U.deinit();
-    var V = try Mat.initZero(alloc, n, n);
+    var V = try Mat.initZero(arena, n, n);
     defer V.deinit();
 
-    try pade13(alloc, As, A2, A4, A6, U, V);
+    try pade13(arena, As, A2, A4, A6, U, V);
 
     // (V - U) * R = (V + U) | Q * R = P
     var P = try V.add(U);
@@ -702,12 +715,14 @@ pub fn expm(alloc: std.mem.Allocator, A: Mat) !Mat {
     // Repeated squaring of R
     var k: u32 = 0;
     while (k < s) : (k += 1) {
-        const R2 = try matMult(alloc, R, R);
+        const R2 = try matMult(arena, R, R);
         R.deinit();
         R = R2;
     }
+    defer R.deinit();
+    const result_data = try alloc.dupe(f64, R.data);
 
-    return R;
+    return .{ .alloc = alloc, .rows = R.rows, .cols = R.cols, .data = result_data };
 }
 
 /// Compute the characteristic polynomial of an n×n matrix A:
