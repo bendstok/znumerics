@@ -46,7 +46,7 @@ zig build examples
 ### Matrices
 ```zig
 const znum = @import("znumerics");
-const Mat = znum.Mat;
+const Mat = znum.Mat; // Mat is Matrix(f64)
 
 var A = try Mat.initZero(alloc, 2, 2);
 defer A.deinit();
@@ -68,6 +68,26 @@ defer eA.deinit();
 // also: initIdentity, transpose, determinant, trace, charPoly, norm1,
 // expand, swapRow, getRow/getCol/setCol, isUpperTriangular/isLowerTriangular
 ```
+
+Matrices are generic over the element type via `znum.Matrix(T)`.
+Aliases: `Mat` (f64), `CMat` (Complex(f64)), and `znum.mat.Mat_32` / `CMat_32` for f32.
+
+```zig
+const CMat = znum.CMat;
+const Cx = std.math.Complex(f64);
+
+var Z = try CMat.initIdentity(alloc, 2, 2);
+defer Z.deinit();
+try Z.set(0, 0, Cx.init(0.0, 1.0)); // i
+
+// Same functions as for f64
+var Zinv = try znum.mat.inverse(alloc, Z);
+defer Zinv.deinit();
+const det = try znum.mat.determinant(alloc, Z); // det = i * 1 = i
+```
+
+NB: expm, matVec and getRow/getCol are f64 only until Vec is generic.
+matMultSIMD falls back to matMult for complex matrices.
 
 ### Vectors
 ```zig

@@ -76,4 +76,27 @@ pub fn main() !void {
     defer id_m5.deinit();
     std.debug.print("Matrix 5 * Matrix 5 Inverse: \n", .{});
     try id_m5.printMat();
+
+    // Matrices are generic over the element type.
+    // Mat is Matrix(f64), CMat is Matrix(Complex(f64)).
+    const CMat = znum.CMat;
+    const Cx = std.math.Complex(f64);
+
+    var m6 = try CMat.initIdentity(alloc, 2, 2);
+    defer m6.deinit();
+    try m6.set(0, 0, Cx.init(0.0, 1.0)); // i
+    try m6.set(1, 1, Cx.init(2.0, 0.0));
+    std.debug.print("Matrix 6 (complex): \n", .{});
+    try m6.printMat();
+
+    // Same functions as for f64
+    var m6Inv = try znum.mat.inverse(alloc, m6);
+    defer m6Inv.deinit();
+    std.debug.print("Matrix 6 Inverse: \n", .{});
+    try m6Inv.printMat();
+
+    // det = i * 2 = 2i
+    const det_m6 = try znum.mat.determinant(alloc, m6);
+    const im_sign: u8 = if (det_m6.im < 0) '-' else '+';
+    std.debug.print("Matrix 6 determinant: {d:.3}{c}{d:.3}i \n", .{ det_m6.re, im_sign, @abs(det_m6.im) });
 }
