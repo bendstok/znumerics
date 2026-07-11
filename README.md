@@ -200,7 +200,7 @@ step covers u = 1 (scale the output for other heights, the system is
 linear), and lsimFn with a comptime fn returning the constant covers
 the rest without the allocation.
 
-### ODE (RK4)
+### ODE (RK4, RKF45)
 ```zig
 // x' = -x + u, u = 2.0, dt = 1e-3
 var ss = try znum.StateSpace.initContinuous(alloc, 1);
@@ -212,6 +212,17 @@ var x = [_]f64{0.0};
 // One step: (state dim (comptime), system, state, input u, dt)
 x = znum.RK4(1, ss, x, 2.0, 1e-3);
 
+// RKF45: adaptive step size, integrates all the way from t0 to tf.
+// (state dim (comptime), system, x0, input u, t0, tf, options)
+const xf = try znum.RKF45(1, ss, .{0.0}, 2.0, 0.0, 1.0, .{});
+
+// Options (all have defaults): tol, h0, h_min, h_max
+const xf2 = try znum.RKF45(1, ss, .{0.0}, 2.0, 0.0, 1.0, .{ .tol = 1e-10 });
+
 // also: znum.PID, znum.signal (tf2ss, ss2tf, cont2discrete)
 ```
+
+NB: RKF45 takes 4th- and 5th-order solutions from the same six stages and
+uses their difference as the local error estimate. Steps above tol are
+rejected and retried smaller; returns StepSizeTooSmall if h underflows h_min.
 
