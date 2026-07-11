@@ -3,6 +3,7 @@ const mat = @import("../core/mat.zig");
 const vec = @import("../core/vec.zig");
 const err_mod = @import("../error.zig");
 const qr_mod = @import("qrdecomposition.zig");
+const sclr = @import("../core/scalar.zig");
 
 const Vec = vec.Vec;
 const Mat = mat.Mat;
@@ -12,65 +13,69 @@ pub const EigenError = error{
     NotSquare,
 } || err_mod.Common;
 
-const arnoldi_result = struct {
-    Q: Mat, // Coloumns are an orthonormal basis of the Krylov subspace
-    h: Mat, // A on basis Q. It is upper Hessenberg.
-};
+pub fn ArnoldiResult(comptime T: type) type {
+    return struct {
+        Q: mat.Matrix(T), // Coloumns are an orthonormal basis of the Krylov subspace
+        h: mat.Matrix(T), // A on basis Q. It is upper Hessenberg.
+    };
+}
 
 /// Builds an orthonormal basis of the order-'iter' Krylov subspace of A,
-/// starting from 'init_vec'. Returns an 'arnoldi_result' with 'Q' (columns
-/// are the orthonormal basis) and 'h' (the upper Hessenberg projection QᵀAQ).
+/// starting from 'init_vec'. Returns an 'ArnoldiResult' with 'Q' (columns
+/// are the orthonormal basis) and 'h' (the upper Hessenberg projection QᴴAQ,
+/// which is QᵀAQ for real T).
 ///
 /// Uses modified Gram-Schmidt orthogonalisation.
 ///
 /// A must be square; 'init_vec' must match its dimension and is normalised
-/// in place. Works on any real square matrix (symmetric or not).
+/// in place. Works on any square matrix (symmetric/Hermitian or not).
 ///
 /// Stops early if the Krylov subspace becomes invariant (a "lucky breakdown"),
 /// producing fewer than 'iter' basis vectors.
-pub fn arnoldi_iteration(A: Mat, init_vec: Vec, iter: usize, alloc: std.mem.Allocator) (err_mod.Common || std.mem.Allocator.Error)!arnoldi_result {
-    const eps: f64 = 1e-12;
-    var res: arnoldi_result = undefined;
-    var h = try Mat.initZero(alloc, iter + 1, iter);
+pub fn arnoldi_iteration(A: anytype, init_vec: vec.Vector(mat.ElementOf(@TypeOf(A))), iter: usize, alloc: std.mem.Allocator) (err_mod.Common || std.mem.Allocator.Error)!ArnoldiResult(mat.ElementOf(@TypeOf(A))) {
+    const T = mat.ElementOf(@TypeOf(A));
+
+    // Breakdown tolerance, scaled to the element precision
+    // (~2e-12 for f64, ~1e-3 for f32; a fixed 1e-12 is below f32 eps).
+    const eps: sclr.Real(T) = std.math.floatEps(sclr.Real(T)) * 1e4;
+
+    var h = try mat.Matrix(T).initZero(alloc, iter + 1, iter);
     errdefer h.deinit();
-    var Q = try Mat.initZero(alloc, A.cols, iter + 1);
+    var Q = try mat.Matrix(T).initZero(alloc, A.cols, iter + 1);
     errdefer Q.deinit();
 
     init_vec.normalize();
     try Q.setCol(0, init_vec.data); // Use the first vector as first Krylov vector
 
-    var v = try Vec.initZero(alloc, A.rows, true);
+    var v = try vec.Vector(T).initZero(alloc, A.rows, true);
     defer v.deinit();
 
     for (1..iter + 1) |k| {
         // v = A * Q[:, k-1]
         for (0..A.rows) |i| {
-            var s: f64 = 0;
-            for (0..A.cols) |j| s += A.atUnsafe(i, j) * Q.atUnsafe(j, k - 1);
+            var s = sclr.zero(T);
+            for (0..A.cols) |j| s = sclr.add(s, sclr.mul(A.atUnsafe(i, j), Q.atUnsafe(j, k - 1)));
             v.setUnsafe(i, s);
         }
 
         for (0..k) |j| { // Subtract projections onto previous basis vectors
             // proj = dot(Q[:, j], v)
-            var proj: f64 = 0;
-            for (0..A.cols) |i| proj += Q.atUnsafe(i, j) * v.atUnsafe(i);
+            var proj = sclr.zero(T);
+            for (0..A.cols) |i| proj = sclr.add(proj, sclr.mul(sclr.conj(Q.atUnsafe(i, j)), v.atUnsafe(i)));
             h.setUnsafe(j, k - 1, proj);
-            for (0..A.cols) |i| v.setUnsafe(i, v.atUnsafe(i) - proj * Q.atUnsafe(i, j));
+            for (0..A.cols) |i| v.setUnsafe(i, sclr.sub(v.atUnsafe(i), sclr.mul(proj, Q.atUnsafe(i, j))));
         }
 
-        h.setUnsafe(k, k - 1, v.norm());
-        if (h.atUnsafe(k, k - 1) > eps) { // Add the produced vector to the basis
+        const hn = v.norm(); // Real(T)
+        h.setUnsafe(k, k - 1, sclr.fromReal(T, hn));
+        if (hn > eps) { // Add the produced vector to the basis
             v.normalize();
             try Q.setCol(k, v.data); // setCol copies, so v may be freed by defer
         } else { // Breakdown: Krylov subspace is invariant, stop early
-            res.Q = Q;
-            res.h = h;
-            return res;
+            return .{ .Q = Q, .h = h };
         }
     }
-    res.Q = Q;
-    res.h = h;
-    return res;
+    return .{ .Q = Q, .h = h };
 }
 
 const Givens = struct { c: f64, s: f64 };
@@ -571,24 +576,24 @@ pub fn qrAlgorithm_LEGACY(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
 const testing = std.testing;
 const tol: f64 = 1e-10;
 
-/// Columns 0..ncols-1 of Q are orthonormal: Q_c^T Q_c ≈ I.
-fn expectOrthonormal(Q: Mat, ncols: usize, alloc: std.mem.Allocator) !void {
+/// Columns 0..ncols-1 of Q are orthonormal: Q_c^H Q_c ≈ I.
+fn expectOrthonormal(Q: anytype, ncols: usize, alloc: std.mem.Allocator) !void {
+    const T = mat.ElementOf(@TypeOf(Q));
     for (0..ncols) |i| {
         var qi = try Q.getCol(i, alloc);
         defer qi.deinit();
         for (0..ncols) |j| {
             var qj = try Q.getCol(j, alloc);
             defer qj.deinit();
-            qj.colvec = false;
             const d = try vec.dot(qi, qj);
-            const expected: f64 = if (i == j) 1.0 else 0.0;
-            try testing.expectApproxEqAbs(expected, d, tol);
+            const expected = if (i == j) sclr.one(T) else sclr.zero(T);
+            try testing.expect(sclr.approxEq(d, expected, tol));
         }
     }
 }
 
 /// Arnoldi relation: A * Q[:, k] == Q * h[:, k] for k = 0..n-1.
-fn expectArnoldiRelation(A: Mat, Q: Mat, h: Mat, n: usize, alloc: std.mem.Allocator) !void {
+fn expectArnoldiRelation(A: anytype, Q: @TypeOf(A), h: @TypeOf(A), n: usize, alloc: std.mem.Allocator) !void {
     for (0..n) |k| {
         var qk = try Q.getCol(k, alloc);
         defer qk.deinit();
@@ -601,16 +606,16 @@ fn expectArnoldiRelation(A: Mat, Q: Mat, h: Mat, n: usize, alloc: std.mem.Alloca
         defer rhs.deinit();
 
         for (0..lhs.len()) |i| {
-            try testing.expectApproxEqAbs(lhs.atUnsafe(i), rhs.atUnsafe(i), tol);
+            try testing.expect(sclr.approxEq(lhs.atUnsafe(i), rhs.atUnsafe(i), tol));
         }
     }
 }
 
 /// h must be upper Hessenberg: zero below the first subdiagonal.
-fn expectHessenberg(h: Mat, n: usize) !void {
+fn expectHessenberg(h: anytype, n: usize) !void {
     for (0..n) |j| {
         for (j + 2..n + 1) |i| {
-            try testing.expectApproxEqAbs(@as(f64, 0.0), h.atUnsafe(i, j), tol);
+            try testing.expect(sclr.isZeroApprox(h.atUnsafe(i, j), tol));
         }
     }
 }
@@ -701,6 +706,40 @@ test "Arnoldi: n=1 shapes and relation" {
     try testing.expectEqual(@as(usize, 1), result.h.cols);
     try expectOrthonormal(result.Q, 2, alloc);
     try expectArnoldiRelation(A, result.Q, result.h, 1, alloc);
+}
+
+test "Arnoldi: Complex Hermitian matrix (Lanczos structure, breakdown)" {
+    const alloc = testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    // A = [[2, i], [-i, 2]] (Hermitian). Hand-computed with b = e1:
+    //   q0 = e1, v = (2, -i)^T, h00 = 2, h10 = 1, q1 = (0, -i)^T
+    //   v = A*q1 = (1, -2i)^T, h01 = 1, h11 = 2, residual = 0 -> breakdown
+    var A = try mat.CMat.initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.setRow(0, [_]Cx{ Cx.init(2, 0), Cx.init(0, 1) });
+    try A.setRow(1, [_]Cx{ Cx.init(0, -1), Cx.init(2, 0) });
+
+    var b = try vec.Vector(Cx).initZero(alloc, 2, true);
+    defer b.deinit();
+    b.setUnsafe(0, Cx.init(1, 0));
+
+    var result = try arnoldi_iteration(A, b, 2, alloc);
+    defer result.Q.deinit();
+    defer result.h.deinit();
+
+    // The first 2 basis vectors span C^2; requires the conjugating inner product.
+    try expectOrthonormal(result.Q, 2, alloc);
+    try expectArnoldiRelation(A, result.Q, result.h, 2, alloc);
+
+    // Hermitian input -> h is Hermitian tridiagonal with real diagonal.
+    try testing.expect(sclr.approxEq(result.h.atUnsafe(0, 0), Cx.init(2, 0), tol));
+    try testing.expect(sclr.approxEq(result.h.atUnsafe(1, 0), Cx.init(1, 0), tol));
+    try testing.expect(sclr.approxEq(result.h.atUnsafe(0, 1), Cx.init(1, 0), tol));
+    try testing.expect(sclr.approxEq(result.h.atUnsafe(1, 1), Cx.init(2, 0), tol));
+
+    // Krylov space is exhausted at m = 2 -> lucky breakdown.
+    try testing.expect(sclr.abs(result.h.atUnsafe(2, 1)) < tol);
 }
 
 test "QR algorithm: eigenvalues of symmetric matrices" {

@@ -2,6 +2,7 @@ const std = @import("std");
 const mat = @import("../core/mat.zig");
 const err_mod = @import("../error.zig");
 const vec = @import("../core/vec.zig");
+const sclr = @import("../core/scalar.zig");
 
 const Mat = mat.Mat;
 const Vec = vec.Vec;
@@ -18,16 +19,18 @@ pub const QRError = error{
 ///
 /// Returns a QRError.NotSquare if A is not square, and a
 /// QRError.BadShape if A is 1x1 (nothing to decompose).
-pub fn qrDecomposition(alloc: std.mem.Allocator, A: Mat) (QRError || std.mem.Allocator.Error)![2]Mat {
+pub fn qrDecomposition(alloc: std.mem.Allocator, A: anytype) (QRError || std.mem.Allocator.Error)![2]mat.Matrix(mat.ElementOf(@TypeOf(A))) {
+    const T = mat.ElementOf(@TypeOf(A));
+
     if (A.rows != A.cols) return QRError.NotSquare;
     const m = A.rows;
     if (m <= 1) return QRError.BadShape;
 
-    var Q = try Mat.initIdentity(alloc, m, m);
+    var Q = try mat.Matrix(T).initIdentity(alloc, m, m);
     errdefer Q.deinit();
 
     var q_initialized: usize = 0;
-    var Q_vec = try alloc.alloc(Mat, m - 1);
+    var Q_vec = try alloc.alloc(mat.Matrix(T), m - 1);
     defer {
         for (0..q_initialized) |i| {
             Q_vec[i].deinit();
@@ -36,57 +39,70 @@ pub fn qrDecomposition(alloc: std.mem.Allocator, A: Mat) (QRError || std.mem.All
     }
 
     for (0..Q_vec.len) |idx| {
-        Q_vec[idx] = try Mat.initZero(alloc, m, m);
+        Q_vec[idx] = try mat.Matrix(T).initZero(alloc, m, m);
         q_initialized += 1;
     }
 
-    var R = try Mat.initZero(alloc, m, m);
+    var R = try mat.Matrix(T).initZero(alloc, m, m);
     errdefer R.deinit();
     var work = try A.clone();
     defer work.deinit();
 
     for (0..m - 1) |i| {
-        var ai = try Vec.initZero(alloc, m, true);
+        var ai = try vec.Vector(T).initZero(alloc, m, true);
         defer ai.deinit();
         // Set a to be the coloumn vector
         for (i..m) |v_i| {
             ai.setUnsafe(v_i, work.atUnsafe(v_i, i));
         }
         // ||a_i|| * e_i == [zeros_0->i-1, alfa_i, zeros_i+1->m] ^ T
-        var ei = try Vec.initZero(alloc, m, true);
+        var ei = try vec.Vector(T).initZero(alloc, m, true);
         defer ei.deinit();
-        ei.setUnsafe(i, 1);
+        ei.setUnsafe(i, sclr.one(T));
 
-        const alfa: f64 = if (ai.atUnsafe(i) >= 0) -ai.norm() else ai.norm();
+        // alfa = -sign(x_i) * ||a_i||, where sign is the phase x/|x| (sign(0) = 1).
+        // For real T this reduces to the usual cancellation-avoiding sign choice.
+        const nrm = ai.norm();
+        const xi = ai.atUnsafe(i);
+        const alfa: T = blk: {
+            const axi = sclr.abs(xi);
+            if (axi == 0) break :blk sclr.fromReal(T, -nrm);
+            const phase = sclr.div(xi, sclr.fromReal(T, axi));
+            break :blk sclr.neg(sclr.mul(phase, sclr.fromReal(T, nrm)));
+        };
 
         ei.multConst(alfa);
 
         // u = X - alfa * e_i
         // v = u / ||u||
         // x = a_i
-        var u = try Vec.initZero(alloc, m, true);
+        var u = try vec.Vector(T).initZero(alloc, m, true);
         defer u.deinit();
         for (0..m) |idx_u| {
-            u.setUnsafe(idx_u, ai.atUnsafe(idx_u) - ei.atUnsafe(idx_u));
+            u.setUnsafe(idx_u, sclr.sub(ai.atUnsafe(idx_u), ei.atUnsafe(idx_u)));
         }
 
         const norm_u = u.norm();
 
-        var v = try Vec.initZero(alloc, m, true);
+        var v = try vec.Vector(T).initZero(alloc, m, true);
         defer v.deinit();
         for (0..m) |idx_v| {
-            v.setUnsafe(idx_v, u.atUnsafe(idx_v) / norm_u);
+            v.setUnsafe(idx_v, sclr.div(u.atUnsafe(idx_v), sclr.fromReal(T, norm_u)));
         }
 
-        // Q_i = I - v_col * v_row
-        var I = try Mat.initIdentity(alloc, m, m);
+        // Q_i = I - 2 * v * v^H (v^T for real T, since conj is the identity there)
+        var I = try mat.Matrix(T).initIdentity(alloc, m, m);
         defer I.deinit();
-        // V * V
-        var v_v = try vec.vecMult(alloc, v, v);
+        var v_conj = try vec.Vector(T).initZero(alloc, m, false);
+        defer v_conj.deinit();
+        for (0..m) |k| {
+            v_conj.setUnsafe(k, sclr.conj(v.atUnsafe(k)));
+        }
+        var v_v = try vec.vecMult(alloc, v, v_conj);
         defer v_v.deinit();
-        v_v.multAll(2);
+        v_v.multAll(sclr.fromReal(T, 2.0));
 
-        try Mat.subInPlace(I, v_v);
+        try I.subInPlace(v_v);
 
         try mat.copyMat(I, Q_vec[i]);
         var work_next = try mat.matMult(alloc, I, work);
@@ -96,13 +112,13 @@ pub fn qrDecomposition(alloc: std.mem.Allocator, A: Mat) (QRError || std.mem.All
     }
 
     // Idea:
-    // Q = Q_1^T * ... Q_i^T
-    // I * Q_1 = Q_1
+    // Q = Q_1^H * ... Q_i^H
+    // Each Householder reflector is Hermitian (symmetric for real T),
+    // so Q_i^H == Q_i and no transpose is needed.
     var idx: u16 = 0;
-    var I_loop = try Mat.initIdentity(alloc, m, m);
+    var I_loop = try mat.Matrix(T).initIdentity(alloc, m, m);
     defer I_loop.deinit();
     while (idx < Q_vec.len) {
-        try Q_vec[idx].transposeInPlace();
         var temp = try mat.matMult(alloc, I_loop, Q_vec[idx]);
         defer temp.deinit();
         try mat.copyMat(temp, I_loop);
@@ -112,15 +128,18 @@ pub fn qrDecomposition(alloc: std.mem.Allocator, A: Mat) (QRError || std.mem.All
     try mat.copyMat(I_loop, Q);
 
     // R:
-    // R = Q_T * A
+    // R = Q^H * A (Q^T for real T, since conj is the identity there)
     var Q_t = try mat.transpose(Q, alloc);
     defer Q_t.deinit();
+    for (Q_t.data) |*e| {
+        e.* = sclr.conj(e.*);
+    }
     var temp = try mat.matMult(alloc, Q_t, A);
     defer temp.deinit();
 
     try mat.copyMat(temp, R);
 
-    const retObj = [2]Mat{ Q, R };
+    const retObj = [2]mat.Matrix(T){ Q, R };
     return retObj;
 }
 
@@ -176,4 +195,45 @@ test "QR Decomposition: Verification & OOM" {
             try std.testing.expect(e == error.OutOfMemory);
         }
     }
+}
+
+test "QR Decomposition: Complex (QR == A, Q unitary, R upper triangular)" {
+    const alloc = std.testing.allocator;
+    const Cx = std.math.Complex(f64);
+    const tol: f64 = 1e-10;
+
+    var A = try mat.CMat.initZero(alloc, 3, 3);
+    defer A.deinit();
+    try A.setRow(0, [_]Cx{ Cx.init(1, 0), Cx.init(0, 1), Cx.init(2, 0) });
+    try A.setRow(1, [_]Cx{ Cx.init(0, -1), Cx.init(3, 0), Cx.init(0, 0) });
+    try A.setRow(2, [_]Cx{ Cx.init(2, 0), Cx.init(0, 0), Cx.init(1, 1) });
+
+    const qr = try qrDecomposition(alloc, A);
+    var Q = qr[0];
+    defer Q.deinit();
+    var R = qr[1];
+    defer R.deinit();
+
+    // Q * R == A
+    var QR = try mat.matMult(alloc, Q, R);
+    defer QR.deinit();
+    for (0..3) |r| for (0..3) |c| {
+        try std.testing.expect(sclr.approxEq(QR.atUnsafe(r, c), A.atUnsafe(r, c), tol));
+    };
+
+    // Q^H * Q == I (unitary; plain Q^T * Q == I does NOT hold for complex Q)
+    var Qh = try mat.transpose(Q, alloc);
+    defer Qh.deinit();
+    for (Qh.data) |*e| {
+        e.* = sclr.conj(e.*);
+    }
+    var QhQ = try mat.matMult(alloc, Qh, Q);
+    defer QhQ.deinit();
+    for (0..3) |r| for (0..3) |c| {
+        const expected = if (r == c) sclr.one(Cx) else sclr.zero(Cx);
+        try std.testing.expect(sclr.approxEq(QhQ.atUnsafe(r, c), expected, tol));
+    };
+
+    // R is upper triangular
+    try std.testing.expect(mat.isUpperTriangular(R, tol));
 }

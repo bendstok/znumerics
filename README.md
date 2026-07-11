@@ -86,8 +86,7 @@ defer Zinv.deinit();
 const det = try znum.mat.determinant(alloc, Z); // det = i * 1 = i
 ```
 
-NB: expm, matVec and getRow/getCol are f64 only until Vec is generic.
-matMultSIMD falls back to matMult for complex matrices.
+NB: matMultSIMD falls back to matMult for complex matrices.
 
 ### Vectors
 ```zig
@@ -101,6 +100,26 @@ const n = v.norm();
 // also: crossProd3d, vecMult (outer product), normalize, resize,
 // setAll, addInPlace/subInPlace
 ```
+
+Vectors are generic over the element type via `znum.Vector(T)`.
+Aliases: `Vec` (f64), `CVec` (Complex(f64)), and `znum.vec.Vec_32` / `CVec_32` for f32.
+
+```zig
+const CVec = znum.CVec;
+
+var w = try CVec.initZero(alloc, 2, false);
+defer w.deinit();
+try w.setAll([_]Cx{ Cx.init(3.0, 4.0), Cx.init(0.0, 0.0) });
+
+// Same functions as for f64. norm() is always real
+const nw = w.norm(); // |3+4i| = 5.0
+
+// dot conjugates the left side, so dot(x, x) == norm(x)^2
+const dw = try znum.vec.dot(w, w); // 25 + 0i
+```
+
+NB: dot ignores row/column orientation.
+vecMult does not conjugate (a * b^T, like np.outer).
 
 ### Eigenvalues
 ```zig
@@ -126,6 +145,10 @@ defer x.deinit();
 
 // also: znum.cholesky.cholesky, znum.QR.qrDecomposition
 ```
+
+NB: gaussJordan pivots on |.|, so complex systems work as-is.
+qrDecomposition uses Householder reflections (I - 2vv^H); Q is unitary
+and R = Q^H * A for complex matrices.
 
 ### ODE (RK4)
 ```zig

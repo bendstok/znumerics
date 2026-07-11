@@ -61,4 +61,16 @@ pub fn build(b: *std.Build) void {
     eig_example.root_module.addImport("znumerics", mod);
     const run_eig_example = b.addRunArtifact(eig_example);
     example_step.dependOn(&run_eig_example.step);
+
+    const vec_example = b.addExecutable(.{
+        .name = "vector",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/vec.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    vec_example.root_module.addImport("znumerics", mod);
+    const run_vec_example = b.addRunArtifact(vec_example);
+    example_step.dependOn(&run_vec_example.step);
 }

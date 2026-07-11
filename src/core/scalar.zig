@@ -88,6 +88,15 @@ pub fn sqrt(a: anytype) @TypeOf(a) {
     return if (comptime isComplex(T)) std.math.complex.sqrt(a) else @sqrt(a);
 }
 
+/// |x|^2 without the sqrt: x*x for reals, re^2 + im^2 for Complex.
+pub fn absSq(x: anytype) Real(@TypeOf(x)) {
+    const T = @TypeOf(x);
+    return if (comptime isComplex(T))
+        x.re * x.re + x.im * x.im
+    else
+        x * x;
+}
+
 // ---------- comparison ----------
 
 /// Exact equality (== on floats; both components on Complex).

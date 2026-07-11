@@ -16,7 +16,9 @@ pub const ode = @import("ode/runge_kutta.zig");
 pub const eigen = @import("linalg/eigen.zig");
 
 // Convenience re-export
+pub const Vector = vec.Vector;
 pub const Vec = vec.Vec;
+pub const CVec = vec.CVec;
 pub const Matrix = mat.Matrix;
 pub const Mat = mat.Mat;
 pub const CMat = mat.CMat;

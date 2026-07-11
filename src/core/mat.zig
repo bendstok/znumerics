@@ -147,13 +147,11 @@ pub fn Matrix(comptime T: type) type {
             }
         }
 
-        // TODO: Update when Vec is generic.
-        /// Returns the row as a Vec. No bounds checks on inputted row.
+        /// Returns the row as a Vector(T). No bounds checks on inputted row.
         ///
         /// Deep copies.
-        pub fn getRow(self: Self, row: usize, alloc: std.mem.Allocator) (vec.VecError || std.mem.Allocator.Error)!Vec {
-            if (comptime sclr.isComplex(T)) @compileError("MAT| getRow: Vec is not generic yet, only f64 matrices supported.");
-            var ret_vec = try Vec.initZero(alloc, self.cols, false);
+        pub fn getRow(self: Self, row: usize, alloc: std.mem.Allocator) (vec.VecError || std.mem.Allocator.Error)!vec.Vector(T) {
+            var ret_vec = try vec.Vector(T).initZero(alloc, self.cols, false);
             errdefer ret_vec.deinit();
             for (0..self.cols) |j| {
                 ret_vec.setUnsafe(j, self.atUnsafe(row, j));
@@ -161,13 +159,11 @@ pub fn Matrix(comptime T: type) type {
             return ret_vec;
         }
 
-        // TODO: Update when Vec gets generic.
-        /// Returns the col as a Vec. No bounds checks on inputted col.
+        /// Returns the col as a Vector(T). No bounds checks on inputted col.
         ///
         /// Deep copies.
-        pub fn getCol(self: Self, col: usize, alloc: std.mem.Allocator) (vec.VecError || std.mem.Allocator.Error)!Vec {
-            if (comptime sclr.isComplex(T)) @compileError("MAT| getCol: Vec is not generic yet, only f64 matrices supported.");
-            var ret_vec = try Vec.initZero(alloc, self.rows, true);
+        pub fn getCol(self: Self, col: usize, alloc: std.mem.Allocator) (vec.VecError || std.mem.Allocator.Error)!vec.Vector(T) {
+            var ret_vec = try vec.Vector(T).initZero(alloc, self.rows, true);
             errdefer ret_vec.deinit();
             for (0..self.rows) |i| {
                 ret_vec.setUnsafe(i, self.atUnsafe(i, col));
@@ -667,12 +663,11 @@ pub fn matMult(alloc: std.mem.Allocator, left: anytype, right: @TypeOf(left)) (M
 }
 
 /// A (mxn) * x (n) -> out (mx1)
-pub fn matVec(alloc: std.mem.Allocator, A: anytype, x: Vec) (MatError || std.mem.Allocator.Error)!Vec {
+pub fn matVec(alloc: std.mem.Allocator, A: anytype, x: vec.Vector(ElementOf(@TypeOf(A)))) (MatError || std.mem.Allocator.Error)!vec.Vector(ElementOf(@TypeOf(A))) {
     if (A.cols != x.len()) return MatError.SizeMismatch;
     const T = ElementOf(@TypeOf(A));
-    comptime if (T != f64) @compileError("MAT| matVec: Vec is not generic yet; only Matrix(f64) is supported.");
 
-    var out = try Vec.initZero(alloc, A.rows, true);
+    var out = try vec.Vector(T).initZero(alloc, A.rows, true);
     for (0..A.rows) |i| {
         var s = sclr.zero(T);
         for (0..A.cols) |j| s = sclr.add(s, sclr.mul(A.atUnsafe(i, j), x.atUnsafe(j)));
@@ -752,9 +747,7 @@ pub fn matMultSIMD(alloc: std.mem.Allocator, left: anytype, right: @TypeOf(left)
 pub fn expm(alloc: std.mem.Allocator, A: anytype) ExpmError!@TypeOf(A) {
     const M = @TypeOf(A);
     const T = ElementOf(M);
-    // The Pade solve goes through Vec + gaussJordan, which are not generic yet.
-    // TODO: lift this restriction once Vec/gaussJordan are generic.
-    comptime if (T != f64) @compileError("MAT| expm: only Matrix(f64) is supported until Vec/gaussJordan are generic.");
+    // The Pade solve goes through Vec + gaussJordan.
 
     // We  use an Arena allocator since these live short and
     // Die together.
@@ -776,7 +769,7 @@ pub fn expm(alloc: std.mem.Allocator, A: anytype) ExpmError!@TypeOf(A) {
     var As = try A.clone();
     defer As.deinit();
 
-    As.multAll(1.0 / scale);
+    As.multAll(sclr.fromReal(T, @floatCast(1.0 / scale)));
 
     // A2, A4, A6
 
@@ -869,13 +862,13 @@ pub fn charPoly(
 /// The inverse of R is not computed explicitly. The system is solved
 /// via Gauss-Jordan for numerical stability, as explicit inverses CAN
 /// introduce large errors.
-// TODO: Make generic once Vec/gaussJordan are generic (expm is gated to f64 until then).
-fn solvePadeSystem(alloc: std.mem.Allocator, Q: Mat, P: Mat) !Mat {
+fn solvePadeSystem(alloc: std.mem.Allocator, Q: anytype, P: @TypeOf(Q)) !Matrix(ElementOf(@TypeOf(Q))) {
+    const T = ElementOf(@TypeOf(Q));
     const n = Q.rows; // square
 
-    var rhs = try Vec.initZero(alloc, n, true);
+    var rhs = try vec.Vector(T).initZero(alloc, n, true);
     defer rhs.deinit();
-    var retMat = try Mat.initZero(alloc, n, n);
+    var retMat = try Matrix(T).initZero(alloc, n, n);
     errdefer retMat.deinit();
 
     // Build RHS
@@ -895,8 +888,9 @@ fn solvePadeSystem(alloc: std.mem.Allocator, Q: Mat, P: Mat) !Mat {
 /// Computes the Pade [13/13] numerator 'U' and denominator 'V'.
 ///
 /// 'As' is the scaled version of 'A'.
-// TODO: Make generic together with solvePadeSystem/expm.
-fn pade13(alloc: std.mem.Allocator, As: Mat, A2: Mat, A4: Mat, A6: Mat, U: Mat, V: Mat) !void {
+fn pade13(alloc: std.mem.Allocator, As: anytype, A2: @TypeOf(As), A4: @TypeOf(As), A6: @TypeOf(As), U: @TypeOf(As), V: @TypeOf(As)) !void {
+    const T = ElementOf(@TypeOf(As));
+
     var A8 = try matMult(alloc, A4, A4);
     defer A8.deinit();
     var A10 = try matMult(alloc, A2, A8);
@@ -905,29 +899,28 @@ fn pade13(alloc: std.mem.Allocator, As: Mat, A2: Mat, A4: Mat, A6: Mat, U: Mat, 
     defer A12.deinit();
 
     const PADE_13_COEFF: [14]f64 = [_]f64{ 64764752532480000, 32382376266240000, 7771770303897600, 1187353796428800, 129060195264000, 10559470521600, 670442572800, 33522128640, 1323241920, 40840800, 960960, 16380, 182, 1 };
-    const b0 = PADE_13_COEFF[0];
-    const b1 = PADE_13_COEFF[1];
-    const b2 = PADE_13_COEFF[2];
-    const b3 = PADE_13_COEFF[3];
-    const b4 = PADE_13_COEFF[4];
-    const b5 = PADE_13_COEFF[5];
-    const b6 = PADE_13_COEFF[6];
-    const b7 = PADE_13_COEFF[7];
-    const b8 = PADE_13_COEFF[8];
-    const b9 = PADE_13_COEFF[9];
-    const b10 = PADE_13_COEFF[10];
-    const b11 = PADE_13_COEFF[11];
-    const b12 = PADE_13_COEFF[12];
-    const b13 = PADE_13_COEFF[13];
+    // Coefficients converted to T at comptime (@floatCast narrows for f32).
+    const b = comptime blk: {
+        var out: [14]T = undefined;
+        for (PADE_13_COEFF, 0..) |coeff, k| out[k] = sclr.fromReal(T, @floatCast(coeff));
+        break :blk out;
+    };
     const n = As.rows;
 
-    var temp = try Mat.initZero(alloc, n, n);
+    var temp = try Matrix(T).initZero(alloc, n, n);
     defer temp.deinit();
 
     for (0..n) |i| for (0..n) |j| {
-        // TODO: Make this nicer!
-        const valV = (if (i == j) b0 else 0.0) + b2 * try A2.at(i, j) + b4 * try A4.at(i, j) + b6 * try A6.at(i, j) + b8 * try A8.at(i, j) + b10 * try A10.at(i, j) + b12 * try A12.at(i, j);
-        const valT = (if (i == j) b1 else 0.0) + b3 * try A2.at(i, j) + b5 * try A4.at(i, j) + b7 * try A6.at(i, j) + b9 * try A8.at(i, j) + b11 * try A10.at(i, j) + b13 * try A12.at(i, j);
+        // V gets the even coefficients, temp (-> U) the odd ones:
+        // valV = b0*I + b2*A2 + b4*A4 + ... + b12*A12
+        // valT = b1*I + b3*A2 + b5*A4 + ... + b13*A12
+        var valV = if (i == j) b[0] else sclr.zero(T);
+        var valT = if (i == j) b[1] else sclr.zero(T);
+        inline for (.{ A2, A4, A6, A8, A10, A12 }, 0..) |Ak, k| {
+            const a = try Ak.at(i, j);
+            valV = sclr.add(valV, sclr.mul(b[2 * k + 2], a));
+            valT = sclr.add(valT, sclr.mul(b[2 * k + 3], a));
+        }
         try V.set(i, j, valV);
         try temp.set(i, j, valT);
     };
@@ -1131,6 +1124,37 @@ test "Matrix(Complex): smoke test of generic paths" {
     try D.set(3, 3, Cx.init(0, 1));
     const det4 = try determinant(alloc, D);
     try std.testing.expect(sclr.approxEq(det4, Cx.init(0, 1), 1e-12));
+
+    // getRow / getCol return Vector(Cx). A = [[i, 0], [0, 2]]
+    var r0 = try A.getRow(0, alloc);
+    defer r0.deinit();
+    try std.testing.expect(!r0.colvec);
+    try std.testing.expect(sclr.approxEq(r0.atUnsafe(0), Cx.init(0, 1), 1e-12));
+    try std.testing.expect(sclr.approxEq(r0.atUnsafe(1), Cx.init(0, 0), 1e-12));
+
+    var c1 = try A.getCol(1, alloc);
+    defer c1.deinit();
+    try std.testing.expect(c1.colvec);
+    try std.testing.expect(sclr.approxEq(c1.atUnsafe(0), Cx.init(0, 0), 1e-12));
+    try std.testing.expect(sclr.approxEq(c1.atUnsafe(1), Cx.init(2, 0), 1e-12));
+}
+
+test "Matrix(f32): getRow / getCol" {
+    const alloc = std.testing.allocator;
+    var A = try Matrix(f32).initIdentity(alloc, 2, 2);
+    defer A.deinit();
+
+    var r = try A.getRow(1, alloc);
+    defer r.deinit();
+    try std.testing.expect(!r.colvec);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), r.atUnsafe(0), 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), r.atUnsafe(1), 1e-6);
+
+    var c = try A.getCol(0, alloc);
+    defer c.deinit();
+    try std.testing.expect(c.colvec);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), c.atUnsafe(0), 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), c.atUnsafe(1), 1e-6);
 }
 
 test "Matrix: Test" {
@@ -1240,6 +1264,64 @@ test "Matrix: Test" {
     try std.testing.expectApproxEqAbs(-@sin(3.0), try A_skewExpm.at(2, 3), 1e-8);
     try std.testing.expectApproxEqAbs(@sin(3.0), try A_skewExpm.at(3, 2), 1e-8);
     try std.testing.expectApproxEqAbs(@cos(3.0), try A_skewExpm.at(3, 3), 1e-8);
+}
+
+test "expm: Complex diagonal (Euler), scaling+squaring path" {
+    const alloc = std.testing.allocator;
+    const Cx = std.math.Complex(f64);
+    const tol: f64 = 1e-8;
+
+    // A = diag(i*pi, 6i) -> expm(A) = diag(exp(i*pi), exp(6i)) = diag(-1, cos6 + i*sin6).
+    // norm1 = 6 > THETA_13, so the scaling + repeated squaring branch fires.
+    var A = try CMat.initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.set(0, 0, Cx.init(0.0, std.math.pi));
+    try A.set(1, 1, Cx.init(0.0, 6.0));
+
+    var eA = try expm(alloc, A);
+    defer eA.deinit();
+
+    try std.testing.expect(sclr.approxEq(try eA.at(0, 0), Cx.init(-1.0, 0.0), tol));
+    try std.testing.expect(sclr.approxEq(try eA.at(1, 1), Cx.init(@cos(6.0), @sin(6.0)), tol));
+    try std.testing.expect(sclr.approxEq(try eA.at(0, 1), Cx.init(0.0, 0.0), tol));
+    try std.testing.expect(sclr.approxEq(try eA.at(1, 0), Cx.init(0.0, 0.0), tol));
+}
+
+test "expm: f64 rotation with scaling+squaring (norm > THETA_13)" {
+    const alloc = std.testing.allocator;
+    const tol: f64 = 1e-8;
+    const theta: f64 = 7.0; // norm1 = 7 > THETA_13
+
+    var A = try Mat.initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.set(0, 1, -theta);
+    try A.set(1, 0, theta);
+
+    var eA = try expm(alloc, A);
+    defer eA.deinit();
+
+    try std.testing.expectApproxEqAbs(@cos(theta), try eA.at(0, 0), tol);
+    try std.testing.expectApproxEqAbs(-@sin(theta), try eA.at(0, 1), tol);
+    try std.testing.expectApproxEqAbs(@sin(theta), try eA.at(1, 0), tol);
+    try std.testing.expectApproxEqAbs(@cos(theta), try eA.at(1, 1), tol);
+}
+
+test "expm: f32 rotation" {
+    const alloc = std.testing.allocator;
+    const tol: f32 = 1e-4; // Pade coefficients are rounded in f32
+
+    var A = try Matrix(f32).initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.set(0, 1, -1.0);
+    try A.set(1, 0, 1.0);
+
+    var eA = try expm(alloc, A);
+    defer eA.deinit();
+
+    try std.testing.expectApproxEqAbs(@cos(@as(f32, 1.0)), try eA.at(0, 0), tol);
+    try std.testing.expectApproxEqAbs(-@sin(@as(f32, 1.0)), try eA.at(0, 1), tol);
+    try std.testing.expectApproxEqAbs(@sin(@as(f32, 1.0)), try eA.at(1, 0), tol);
+    try std.testing.expectApproxEqAbs(@cos(@as(f32, 1.0)), try eA.at(1, 1), tol);
 }
 
 test "inverse: singular matrix -> Singular, non-square -> BadShape" {
