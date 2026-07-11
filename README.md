@@ -28,12 +28,12 @@ Compared against Python on the same machine (`python benchmarks/bench.py`), ns/i
 | Benchmark | znumerics | NumPy | Pure Python |
 |---|---|---|---|
 | add 512x512 | 579,750 | 682,320 | 10,966,380 |
-| matmul 64x64 | 35,020 | 27,985 | 9,800,710 |
+| matmul 64x64 | 23,500 | 27,985 | 9,800,710 |
 | eigenvalues 20x20 | 15,084 | 14,264 | - |
 | complex eigenvalues 20x20 | 3,664 | 11,768 | - |
 
 NB: addSIMD is approx equal to add (the plain loop auto-vectorizes),
-matMultSIMD is approx 1.8x faster than matMult.
+matMultSIMD is approx 2.8x faster than matMult.
 
 NB: complex eigenvalues are approx 3x faster than numpy here, but this is with
 matrices that are small. Expect that the gap shrinks with size.
