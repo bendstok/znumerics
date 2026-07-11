@@ -27,6 +27,7 @@ pub const CMat = mat.CMat;
 pub const StateSpace = signal.StateSpace;
 pub const PID = control.PID_DEO_Sim;
 pub const RK4 = ode.RK4;
+pub const RKF45 = ode.RKF45;
 pub const eigenvalues = eigen.eigenvalues;
 pub const eigenvaluesComplex = eigen.eigenvaluesComplex;
 
