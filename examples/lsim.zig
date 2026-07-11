@@ -21,14 +21,19 @@ pub fn main() !void {
     try st.y.printVec();
 
     // Impulse response: y(t) = e^-t
-    var im = try znum.lsim.impulse(alloc, ss, 0.1, 11);
+    var im = try znum.lsim.impulse(
+        alloc,
+        ss,
+        0.1,
+        11,
+    );
     defer im.deinit();
     std.debug.print("Impulse response: \n", .{});
     try im.y.printVec();
 
     // Open loop with an input signal: u = 2 -> y(t) = 2 * (1 - e^-t)
     const u = [_]f64{2.0} ** 11;
-    var ol = try znum.lsim.lsim(alloc, ss, &u, 0.1, null);
+    var ol = try znum.lsim.lsim(alloc, ss, &u, 0.1, null, .{});
     defer ol.deinit();
     std.debug.print("Response to u = 2: \n", .{});
     try ol.y.printVec();
@@ -46,7 +51,7 @@ pub fn main() !void {
             return p.compute(1.0, x.atUnsafe(0)); // ref = 1, y = x[0]
         }
     };
-    var cl = try znum.lsim.lsimFn(alloc, ss, dt, 5000, &pid, C.w, null);
+    var cl = try znum.lsim.lsimFn(alloc, ss, dt, 5000, &pid, C.w, null, .{});
     defer cl.deinit();
     std.debug.print("Closed loop with the PID (K_p = 9, T_i = 0.5), ref = 1: \n", .{});
     std.debug.print("y settles at {d:.4} (integral action removes the P-only offset of 0.9) \n", .{cl.y.atUnsafe(4999)});

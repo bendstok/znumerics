@@ -134,7 +134,15 @@ defer alloc.free(eigs);
 const ceigs = try znum.eigenvaluesComplex(alloc, A, 1000, 1e-12, null);
 defer alloc.free(ceigs);
 
-// also: znum.eigen.qrAlgorithm / qrAlgorithmComplex (shifted QR directly on the dense matrix),
+// Polynomial roots (descending coefficients, matching charPoly):
+// x^2 - 3x + 2 -> roots 1 and 2, returned as []Complex(f64)
+const rts = try znum.roots(alloc, &[_]f64{ 1.0, -3.0, 2.0 }, 1000, 1e-12);
+defer alloc.free(rts);
+
+// also: znum.eigen.qrAlgorithm / qrAlgorithmComplex (shifted QR with
+// balancing + Householder Hessenberg reduction),
+// znum.eigen.eigenvaluesArnoldi / eigenvaluesComplexArnoldi (Arnoldi
+// reduction pipeline, for the sparse/partial-spectrum niche),
 // znum.eigen.arnoldi_iteration (Krylov basis + Hessenberg projection)
 ```
 
@@ -167,9 +175,9 @@ try ss.A.set(0, 0, -1.0);
 try ss.B.set(0, 1.0);
 try ss.C.set(0, 1.0);
 
-// Open loop: (alloc, system, input signal, dt, optional x0)
+// Open loop: (alloc, system, input signal, dt, optional x0, options)
 const u = [_]f64{2.0} ** 1001;
-var res = try znum.lsim.lsim(alloc, ss, &u, 1e-3, null);
+var res = try znum.lsim.lsim(alloc, ss, &u, 1e-3, null, .{});
 defer res.deinit();
 // res.t, res.y, res.x (state trajectory, coloumn k is x[k])
 
@@ -184,9 +192,12 @@ const P = struct {
         return self.kp * (self.r - x.atUnsafe(0));
     }
 };
-var cl = try znum.lsim.lsimFn(alloc, ss, 1e-3, 5000, P{ .kp = 9.0, .r = 1.0 }, P.w, null);
+var cl = try znum.lsim.lsimFn(alloc, ss, 1e-3, 5000, P{ .kp = 9.0, .r = 1.0 }, P.w, null, .{});
 defer cl.deinit();
 // y settles at kp * r / (1 + kp) = 0.9
+
+// For unstable systems, .{ .clamp = 1e3 } bounds every state/output
+// sample to [-1e3, 1e3] (NaN -> 0) so the result stays plottable.
 
 // also: dlsim/dlsimFn (discrete systems), step, impulse
 ```
@@ -219,7 +230,8 @@ const xf = try znum.RKF45(1, ss, .{0.0}, 2.0, 0.0, 1.0, .{});
 // Options (all have defaults): tol, h0, h_min, h_max
 const xf2 = try znum.RKF45(1, ss, .{0.0}, 2.0, 0.0, 1.0, .{ .tol = 1e-10 });
 
-// also: znum.PID, znum.signal (tf2ss, ss2tf, cont2discrete)
+// also: znum.PID, znum.signal (tf2ss, ss2tf, cont2discrete,
+// StateSpace.fromSlices, dcgain)
 ```
 
 NB: RKF45 takes 4th- and 5th-order solutions from the same six stages and

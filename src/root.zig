@@ -30,6 +30,7 @@ pub const RK4 = ode.RK4;
 pub const RKF45 = ode.RKF45;
 pub const eigenvalues = eigen.eigenvalues;
 pub const eigenvaluesComplex = eigen.eigenvaluesComplex;
+pub const roots = eigen.roots;
 
 test {
     _ = @import("core/scalar.zig");

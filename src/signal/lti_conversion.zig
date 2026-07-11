@@ -2,6 +2,7 @@ const std = @import("std");
 const mat = @import("../core/mat.zig");
 const vec = @import("../core/vec.zig");
 const err_mod = @import("../error.zig");
+const lu_mod = @import("../linalg/lu.zig");
 
 const Vec = vec.Vec;
 const Mat = mat.Mat;
@@ -93,6 +94,39 @@ pub const StateSpace = struct {
         errdefer C.deinit();
         const D = try self.D.clone();
         return .{ .A = A, .B = B, .C = C, .D = D, .alloc = self.alloc, .domain = self.domain, .dt = self.dt };
+    }
+
+    /// Builds a StateSpace from flat slices: 'a' is row-major n×n, 'b' and
+    /// 'c' have length n, and 'd' is the scalar feedthrough. The slices are
+    /// copied; the caller keeps ownership. 'dt' is ignored for a Continuous
+    /// system (stored as 0.0).
+    ///
+    /// Returns LTIError.BadShape if n == 0 and LTIError.SizeMismatch if a
+    /// slice length does not match n.
+    pub fn fromSlices(
+        alloc: std.mem.Allocator,
+        domain: LTIDomain,
+        dt: f64,
+        n: usize,
+        a: []const f64,
+        b: []const f64,
+        c: []const f64,
+        d: f64,
+    ) (LTIError || std.mem.Allocator.Error)!StateSpace {
+        if (n == 0) return LTIError.BadShape;
+        if (a.len != n * n or b.len != n or c.len != n) return LTIError.SizeMismatch;
+        var ss = switch (domain) {
+            .Continuous => try initContinuous(alloc, n),
+            .Discrete => try initDiscrete(alloc, n, dt),
+        };
+        errdefer ss.deinit();
+        for (0..n) |i| {
+            for (0..n) |j| ss.A.setUnsafe(i, j, a[i * n + j]);
+            ss.B.setUnsafe(i, b[i]);
+            ss.C.setUnsafe(i, c[i]);
+        }
+        ss.D.setUnsafe(0, d);
+        return ss;
     }
 };
 
@@ -299,15 +333,16 @@ pub fn cont2discrete(
     SS.domain = LTIDomain.Discrete;
 }
 
-/// Convert discrete‐time state‐space (A,B,C,D) into a SISO TF in z⁻¹ form:
-///   H(z) = (num[0] + num[1]·z⁻¹ + … + num[n]·z⁻ⁿ)
-///   (den[0] + den[1]·z⁻¹ + … + den[n]·z⁻ⁿ)
+/// Convert state‐space (A,B,C,D) into a SISO TransferFunction:
+///   H = (num[0] + num[1]·x + … + num[n]·xⁿ) / (den[0] + den[1]·x + … + den[n]·xⁿ)
+/// with x = z⁻¹ for a discrete system and descending powers of s for a
+/// continuous one.
 ///
-/// Returns a discrete TransferFunction.
+/// The identity itself is domain-independent; the returned TransferFunction
+/// inherits the domain and dt of the input StateSpace.
 pub fn ss2tf(
     alloc: std.mem.Allocator,
     SS: StateSpace,
-    dt: f64,
 ) (LTIError || std.mem.Allocator.Error)!TransferFunction {
     const n = SS.A.rows;
 
@@ -332,13 +367,47 @@ pub fn ss2tf(
     try mat.charPoly(alloc, M, polyM);
 
     // 4) Final TF = polyM + (D[0]-1)*polyA  over  polyA
-    var TF = try TransferFunction.initZero(alloc, n + 1, LTIDomain.Discrete, dt);
+    var TF = try TransferFunction.initZero(alloc, n + 1, SS.domain, SS.dt);
     const scale = SS.D.atUnsafe(0) - 1.0;
     for (0..n + 1) |i| {
         try TF.setNum(i, polyM[i] + scale * polyA[i]);
         try TF.setDen(i, polyA[i]);
     }
     return TF;
+}
+
+/// Steady-state (DC) gain of a SISO StateSpace.
+///
+/// Continuous: D − C·A⁻¹·B (the transfer function at s = 0).
+/// Discrete:   D + C·(I−A)⁻¹·B (the transfer function at z = 1).
+///
+/// Returns LUError.Singular when the gain is unbounded — an integrator
+/// (pole at s = 0, respectively z = 1); the caller decides how to
+/// present ∞.
+pub fn dcgain(alloc: std.mem.Allocator, SS: StateSpace) (lu_mod.LUError || std.mem.Allocator.Error)!f64 {
+    const n = SS.A.rows;
+    if (n == 0) return SS.D.atUnsafe(0);
+
+    // M = -A (continuous) or I - A (discrete); gain = D + C · M⁻¹ B.
+    var M = try Mat.initZero(alloc, n, n);
+    defer M.deinit();
+    for (0..n) |i| {
+        for (0..n) |j| {
+            const aij = SS.A.atUnsafe(i, j);
+            const mij = switch (SS.domain) {
+                .Continuous => -aij,
+                .Discrete => (if (i == j) @as(f64, 1.0) else @as(f64, 0.0)) - aij,
+            };
+            M.setUnsafe(i, j, mij);
+        }
+    }
+
+    var x = try lu_mod.solve(alloc, M, SS.B); // M·x = B
+    defer x.deinit();
+
+    var g: f64 = SS.D.atUnsafe(0);
+    for (0..n) |i| g += SS.C.atUnsafe(i) * x.atUnsafe(i);
+    return g;
 }
 
 pub fn cont2discrete_tf(alloc: std.mem.Allocator, TF: *TransferFunction, dt: f64) (LTIError || mat.ExpmError)!void {
@@ -356,8 +425,8 @@ pub fn cont2discrete_tf(alloc: std.mem.Allocator, TF: *TransferFunction, dt: f64
     // Compute ZOH conversion
     try cont2discrete(alloc, &SS, dt);
 
-    // Back to TF via ss2tf
-    const TFd = try ss2tf(alloc, SS, dt);
+    // Back to TF via ss2tf; SS is discrete with dt set by cont2discrete
+    const TFd = try ss2tf(alloc, SS);
     errdefer TFd.deinit();
 
     // Swap ownership
@@ -577,7 +646,7 @@ test "ss2tf: success path via cont2discrete_tf matches manual ss2tf(cont2discret
     defer SS_cont.deinit();
 
     try cont2discrete(alloc, &SS_cont, dt);
-    var TF_ref = try ss2tf(alloc, SS_cont, dt);
+    var TF_ref = try ss2tf(alloc, SS_cont);
     defer TF_ref.deinit();
 
     // Compare lengths and coefficients
@@ -612,7 +681,7 @@ test "ss2tf: OOM at various allocation points does not leak" {
         try SS.C.set(0, 2.0);
         try SS.D.set(0, 0.0);
 
-        const res = ss2tf(alloc, SS, 0.1);
+        const res = ss2tf(alloc, SS);
         if (res) |tf_val| {
             // Success path also must not leak
             var tf = tf_val;
@@ -688,6 +757,123 @@ test "cont2discrete_tf: OOM at various allocation points does not leak" {
         if (r) |_| {} else |e| {
             // cont2discrete_tf also can throw BadShape if inputs invalid;
             // for this input it should only OOM.
+            try std.testing.expect(e == error.OutOfMemory);
+        }
+    }
+}
+
+test "ss2tf: continuous system inherits domain and dt" {
+    const alloc = std.testing.allocator;
+
+    // x' = -2x + 3u, y = 4x  =>  H(s) = 12 / (s + 2)
+    var SS = try StateSpace.initContinuous(alloc, 1);
+    defer SS.deinit();
+    try SS.A.set(0, 0, -2.0);
+    try SS.B.set(0, 3.0);
+    try SS.C.set(0, 4.0);
+
+    var TF = try ss2tf(alloc, SS);
+    defer TF.deinit();
+
+    try std.testing.expectEqual(LTIDomain.Continuous, TF.domain);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), TF.dt, 1e-12);
+
+    // num = [0, 12], den = [1, 2] (descending powers of s)
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), TF.num[0], 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 12.0), TF.num[1], 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 1.0), TF.den[0], 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 2.0), TF.den[1], 1e-12);
+}
+
+test "StateSpace.fromSlices: builds the same system as manual set calls" {
+    const alloc = std.testing.allocator;
+
+    const a = [_]f64{ -5.0, -6.0, 1.0, 0.0 }; // row-major 2x2
+    const b = [_]f64{ 1.0, 0.0 };
+    const c = [_]f64{ 1.0, 3.0 };
+
+    var ss = try StateSpace.fromSlices(alloc, .Continuous, 0.0, 2, &a, &b, &c, 0.5);
+    defer ss.deinit();
+
+    try std.testing.expectEqual(LTIDomain.Continuous, ss.domain);
+    try std.testing.expectApproxEqRel(@as(f64, -5.0), try ss.A.get(0, 0), 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, -6.0), try ss.A.get(0, 1), 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 1.0), try ss.A.get(1, 0), 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), try ss.A.get(1, 1), 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 1.0), try ss.B.get(0), 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 1.0), try ss.C.get(0), 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 3.0), try ss.C.get(1), 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 0.5), try ss.D.get(0), 1e-12);
+
+    // Discrete carries dt.
+    var ssd = try StateSpace.fromSlices(alloc, .Discrete, 0.1, 2, &a, &b, &c, 0.0);
+    defer ssd.deinit();
+    try std.testing.expectEqual(LTIDomain.Discrete, ssd.domain);
+    try std.testing.expectApproxEqRel(@as(f64, 0.1), ssd.dt, 1e-12);
+
+    // Shape errors.
+    try std.testing.expectError(LTIError.BadShape, StateSpace.fromSlices(alloc, .Continuous, 0.0, 0, &[_]f64{}, &[_]f64{}, &[_]f64{}, 0.0));
+    try std.testing.expectError(LTIError.SizeMismatch, StateSpace.fromSlices(alloc, .Continuous, 0.0, 2, a[0..3], &b, &c, 0.0));
+    try std.testing.expectError(LTIError.SizeMismatch, StateSpace.fromSlices(alloc, .Continuous, 0.0, 2, &a, b[0..1], &c, 0.0));
+}
+
+test "dcgain: continuous, discrete, and integrator" {
+    const alloc = std.testing.allocator;
+
+    // Continuous lag x' = -x + u, y = x: gain = 1.
+    {
+        var ss = try StateSpace.fromSlices(alloc, .Continuous, 0.0, 1, &[_]f64{-1.0}, &[_]f64{1.0}, &[_]f64{1.0}, 0.0);
+        defer ss.deinit();
+        try std.testing.expectApproxEqRel(@as(f64, 1.0), try dcgain(alloc, ss), 1e-12);
+    }
+
+    // Continuous with feedthrough: A=-2, B=3, C=4, D=0.5:
+    // gain = D - C·A⁻¹·B = 0.5 + 4·3/2 = 6.5.
+    {
+        var ss = try StateSpace.fromSlices(alloc, .Continuous, 0.0, 1, &[_]f64{-2.0}, &[_]f64{3.0}, &[_]f64{4.0}, 0.5);
+        defer ss.deinit();
+        try std.testing.expectApproxEqRel(@as(f64, 6.5), try dcgain(alloc, ss), 1e-12);
+    }
+
+    // Discrete x[k+1] = 0.5x[k] + u, y = x: gain = 1/(1-0.5) = 2.
+    {
+        var ss = try StateSpace.fromSlices(alloc, .Discrete, 1.0, 1, &[_]f64{0.5}, &[_]f64{1.0}, &[_]f64{1.0}, 0.0);
+        defer ss.deinit();
+        try std.testing.expectApproxEqRel(@as(f64, 2.0), try dcgain(alloc, ss), 1e-12);
+    }
+
+    // Continuous integrator x' = u: pole at s = 0 -> Singular.
+    {
+        var ss = try StateSpace.fromSlices(alloc, .Continuous, 0.0, 1, &[_]f64{0.0}, &[_]f64{1.0}, &[_]f64{1.0}, 0.0);
+        defer ss.deinit();
+        try std.testing.expectError(lu_mod.LUError.Singular, dcgain(alloc, ss));
+    }
+
+    // Discrete integrator x[k+1] = x[k] + u: pole at z = 1 -> Singular.
+    {
+        var ss = try StateSpace.fromSlices(alloc, .Discrete, 1.0, 1, &[_]f64{1.0}, &[_]f64{1.0}, &[_]f64{1.0}, 0.0);
+        defer ss.deinit();
+        try std.testing.expectError(lu_mod.LUError.Singular, dcgain(alloc, ss));
+    }
+}
+
+test "dcgain: OOM does not leak" {
+    const a = [_]f64{ -5.0, -6.0, 1.0, 0.0 };
+    const b = [_]f64{ 1.0, 0.0 };
+    const c = [_]f64{ 1.0, 3.0 };
+
+    for (0..40) |fail_index| {
+        var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const alloc = fa.allocator();
+
+        var ss = StateSpace.fromSlices(alloc, .Continuous, 0.0, 2, &a, &b, &c, 0.0) catch |e| {
+            try std.testing.expect(e == error.OutOfMemory);
+            continue;
+        };
+        defer ss.deinit();
+
+        const g = dcgain(alloc, ss);
+        if (g) |_| {} else |e| {
             try std.testing.expect(e == error.OutOfMemory);
         }
     }

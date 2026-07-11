@@ -23,7 +23,7 @@ fn sumSlice(s: []const f64) f64 {
 
 /// Compares the two eigenvalue routes on the same dense symmetric matrix:
 ///   - qrAlgorithm: shifted QR directly on the dense matrix
-///   - eigenvalues: Arnoldi reduction to Hessenberg, then shifted QR
+///   - eigenvaluesArnoldi: Arnoldi reduction to Hessenberg, then shifted QR
 pub fn qrDirectVsPipeline(alloc: std.mem.Allocator, io: std.Io) !void {
     const N: usize = 20;
     const reps: usize = 25;
@@ -40,7 +40,7 @@ pub fn qrDirectVsPipeline(alloc: std.mem.Allocator, io: std.Io) !void {
     {
         const e1 = try znum.eigen.qrAlgorithm(alloc, A, max_iter, tol, &it_direct);
         alloc.free(e1);
-        const e2 = try znum.eigenvalues(alloc, A, max_iter, tol, &it_pipe);
+        const e2 = try znum.eigen.eigenvaluesArnoldi(alloc, A, max_iter, tol, &it_pipe);
         alloc.free(e2);
     }
 
@@ -50,7 +50,7 @@ pub fn qrDirectVsPipeline(alloc: std.mem.Allocator, io: std.Io) !void {
         while (w < 3) : (w += 1) {
             const e1 = try znum.eigen.qrAlgorithm(alloc, A, max_iter, tol, null);
             alloc.free(e1);
-            const e2 = try znum.eigenvalues(alloc, A, max_iter, tol, null);
+            const e2 = try znum.eigen.eigenvaluesArnoldi(alloc, A, max_iter, tol, null);
             alloc.free(e2);
         }
     }
@@ -69,13 +69,13 @@ pub fn qrDirectVsPipeline(alloc: std.mem.Allocator, io: std.Io) !void {
     const ns_direct: u64 = @intCast(t_direct.untilNow(io, .awake).toNanoseconds());
     std.mem.doNotOptimizeAway(sum_direct);
 
-    // --- time eigenvalues (Arnoldi -> Hessenberg -> QR) ---
+    // --- time eigenvaluesArnoldi (Arnoldi -> Hessenberg -> QR) ---
     var sum_pipe: f64 = 0.0;
     const t_pipe = std.Io.Timestamp.now(io, .awake);
     {
         var k: usize = 0;
         while (k < reps) : (k += 1) {
-            const e = try znum.eigenvalues(alloc, A, max_iter, tol, null);
+            const e = try znum.eigen.eigenvaluesArnoldi(alloc, A, max_iter, tol, null);
             sum_pipe += sumSlice(e);
             alloc.free(e);
         }
@@ -90,7 +90,7 @@ pub fn qrDirectVsPipeline(alloc: std.mem.Allocator, io: std.Io) !void {
     const pipe_per = @as(f64, @floatFromInt(ns_pipe)) / @as(f64, @floatFromInt(reps));
 
     std.debug.print(
-        "\n[bench] Eigenvalues, symmetric {d}x{d}, reps={d}\n  qrAlgorithm (direct) : {d} iters, {d} ns total, {d} ns/call\n  eigenvalues (Arnoldi): {d} iters, {d} ns total, {d} ns/call\n  speedup              : {d}x\n",
+        "\n[bench] Eigenvalues, symmetric {d}x{d}, reps={d}\n  qrAlgorithm (direct) : {d} iters, {d} ns total, {d} ns/call\n  eigenvaluesArnoldi   : {d} iters, {d} ns total, {d} ns/call\n  speedup              : {d}x\n",
         .{
             N,         N,         reps,
             it_direct, ns_direct, direct_per,

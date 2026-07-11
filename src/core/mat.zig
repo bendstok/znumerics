@@ -261,10 +261,10 @@ pub fn Matrix(comptime T: type) type {
         pub fn expand(self: *Self, rows: usize, cols: usize, fill: T) (MatError || std.mem.Allocator.Error)!void {
             if (rows == 0 or cols == 0) return MatError.Empty;
 
-            if (self.rows >= rows or self.cols >= cols) {
-                std.log.warn("Attempted shrinking when using expand() \n", .{});
-                return;
-            }
+            // Shrinking is not supported; expand() is a no-op in that case.
+            // (No logging: the library must stay logging-free so it links
+            // cleanly on freestanding/wasm targets.)
+            if (self.rows >= rows or self.cols >= cols) return;
 
             const old_rows = self.rows;
             const old_cols = self.cols;
@@ -477,14 +477,8 @@ pub fn Matrix(comptime T: type) type {
 
         /// Check bounds. Throws an IndexOutOfBounds on failure.
         fn boundsCheck(self: Self, row: usize, col: usize) MatError!void {
-            if (row >= self.rows) {
-                std.log.warn("Tried to access row {}, but the valid range is [0,{}] \n", .{ row, self.rows - 1 });
-                return MatError.IndexOutOfBounds;
-            }
-            if (col >= self.cols) {
-                std.log.warn("Tried to access coloumn: {}, but the valid range is [0,{}] \n", .{ col, self.cols - 1 });
-                return MatError.IndexOutOfBounds;
-            }
+            if (row >= self.rows) return MatError.IndexOutOfBounds;
+            if (col >= self.cols) return MatError.IndexOutOfBounds;
             return;
         }
     };
@@ -747,7 +741,7 @@ pub fn matMultSIMD(alloc: std.mem.Allocator, left: anytype, right: @TypeOf(left)
 pub fn expm(alloc: std.mem.Allocator, A: anytype) ExpmError!@TypeOf(A) {
     const M = @TypeOf(A);
     const T = ElementOf(M);
-    // The Pade solve goes through Vec + gaussJordan.
+    // The Pade system Q·R = P is solved via LU (see solvePadeSystem).
 
     // We  use an Arena allocator since these live short and
     // Die together.
@@ -991,19 +985,13 @@ pub fn determinant(alloc: std.mem.Allocator, mat: anytype) (MatError || std.mem.
 /// I.e 'tolerance = 1e-8' -> Everything below in absolute
 /// value considered zero.
 ///
-/// If the absolute difference between the matrix value
-/// and the tolerance is less than 1e-10, writes a console
-/// warning.
+/// NB: a value within ~1e-10 of the tolerance is an ambiguous call;
+/// pick a tolerance well separated from the magnitudes in the matrix.
 pub fn isLowerTriangular(A: anytype, tolerance: sclr.Real(ElementOf(@TypeOf(A)))) bool {
     for (0..A.rows) |r| {
         for (r + 1..A.cols) |c| {
             // In-bounds by loop construction.
-            if (sclr.abs(A.atUnsafe(r, c)) > tolerance) {
-                if (@abs(sclr.abs(A.atUnsafe(r, c)) - tolerance) <= 1e-10) {
-                    std.log.warn("isLowerTriangular| Difference between 'tolerance' and matrix values is <= 1e-10. \n", .{});
-                }
-                return false;
-            }
+            if (sclr.abs(A.atUnsafe(r, c)) > tolerance) return false;
         }
     }
     return true;
@@ -1017,19 +1005,13 @@ pub fn isLowerTriangular(A: anytype, tolerance: sclr.Real(ElementOf(@TypeOf(A)))
 /// I.e 'tolerance = 1e-8' -> Everything below in absolute
 /// value considered zero.
 ///
-/// If the absolute difference between the matrix value
-/// and the tolerance is less than 1e-10, writes a console
-/// warning.
+/// NB: a value within ~1e-10 of the tolerance is an ambiguous call;
+/// pick a tolerance well separated from the magnitudes in the matrix.
 pub fn isUpperTriangular(A: anytype, tolerance: sclr.Real(ElementOf(@TypeOf(A)))) bool {
     for (0..A.rows) |r| {
         for (0..r) |c| {
             // In-bounds by loop construction.
-            if (sclr.abs(A.atUnsafe(r, c)) > tolerance) {
-                if (@abs(sclr.abs(A.atUnsafe(r, c)) - tolerance) <= 1e-10) {
-                    std.log.warn("isUpperTriangular| Difference between 'tolerance' and matrix values is <= 1e-10. \n", .{});
-                }
-                return false;
-            }
+            if (sclr.abs(A.atUnsafe(r, c)) > tolerance) return false;
         }
     }
     return true;

@@ -70,9 +70,9 @@ pub fn main() !void {
             .{ 1, 2, 4 },
         });
         var it: usize = 0;
-        const eigs = try znum.eigenvalues(alloc, A, 1000, 1e-12, &it);
+        const eigs = try znum.eigen.eigenvaluesArnoldi(alloc, A, 1000, 1e-12, &it);
         defer alloc.free(eigs);
-        report("3x3 dense          (eigenvalues) ", eigs, it);
+        report("3x3 dense          (eigenvaluesArnoldi) ", eigs, it);
     }
 
     // 4x4 tridiagonal, full pipeline.
@@ -86,15 +86,15 @@ pub fn main() !void {
             .{ 0, 0, 1, 1 },
         });
         var it: usize = 0;
-        const eigs = try znum.eigenvalues(alloc, A, 1000, 1e-12, &it);
+        const eigs = try znum.eigen.eigenvaluesArnoldi(alloc, A, 1000, 1e-12, &it);
         defer alloc.free(eigs);
-        report("4x4 tridiagonal    (eigenvalues) ", eigs, it);
+        report("4x4 tridiagonal    (eigenvaluesArnoldi) ", eigs, it);
     }
 
     // 8x8 dense symmetric: same matrix both ways, to compare iteration counts.
-    // qrAlgorithm runs the shifted QR directly on the dense matrix; eigenvalues
-    // first reduces it to Hessenberg form via Arnoldi, which the QR iteration
-    // then chews through in fewer sweeps.
+    // qrAlgorithm runs the shifted QR directly on the dense matrix;
+    // eigenvaluesArnoldi first reduces it to Hessenberg form via Arnoldi,
+    // which the QR iteration then chews through in fewer sweeps.
     {
         std.debug.print("\n8x8 dense symmetric (same matrix, two routes):\n", .{});
         const data = [_][8]f64{
@@ -121,10 +121,10 @@ pub fn main() !void {
         defer A2.deinit();
         setMat(A2, data);
         var it_pipe: usize = 0;
-        const e_pipe = try znum.eigenvalues(alloc, A2, 1000, 1e-12, &it_pipe);
+        const e_pipe = try znum.eigen.eigenvaluesArnoldi(alloc, A2, 1000, 1e-12, &it_pipe);
         defer alloc.free(e_pipe);
         std.mem.sort(f64, e_pipe, {}, std.sort.desc(f64));
-        report("  eigenvalues (Arnoldi -> QR)      ", e_pipe, it_pipe);
+        report("  eigenvaluesArnoldi (Arnoldi -> QR)", e_pipe, it_pipe);
     }
 
     std.debug.print("\n=== Complex eigenvalues (real Schur form) ===\n\n", .{});

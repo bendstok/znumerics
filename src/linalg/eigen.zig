@@ -86,6 +86,90 @@ fn givens(a: f64, b: f64) Givens {
     return .{ .c = a / r, .s = -b / r };
 }
 
+/// Balances A in place with a diagonal similarity transform (Parlett-Reinsch),
+/// equalising the 1-norms of matching rows and columns. Scale factors are
+/// powers of 2, so no rounding error is introduced. Eigenvalues are unchanged
+/// and the transform is not recorded, since only eigenvalues are read out.
+/// The zero pattern is preserved (diagonal similarity), so a Hessenberg
+/// matrix stays Hessenberg.
+///
+/// Badly scaled matrices (hand-edited state matrices, companion matrices of
+/// polynomials with widely varying coefficients) are exactly where the QR
+/// iteration loses accuracy; balancing restores it at negligible cost.
+fn balance(A: Mat) void {
+    const n = A.rows;
+    const radix: f64 = 2.0;
+    var done = false;
+    while (!done) {
+        done = true;
+        for (0..n) |i| {
+            var c: f64 = 0.0;
+            var r: f64 = 0.0;
+            for (0..n) |j| {
+                if (j == i) continue;
+                c += @abs(A.atUnsafe(j, i));
+                r += @abs(A.atUnsafe(i, j));
+            }
+            if (c == 0.0 or r == 0.0) continue;
+            const s = c + r;
+            var f: f64 = 1.0;
+            while (c < r / radix) {
+                c *= radix * radix;
+                f *= radix;
+            }
+            while (c > r * radix) {
+                c /= radix * radix;
+                f /= radix;
+            }
+            if ((c + r) / f < 0.95 * s) {
+                done = false;
+                const g = 1.0 / f;
+                for (0..n) |j| A.setUnsafe(i, j, A.atUnsafe(i, j) * g); // row i /= f
+                for (0..n) |j| A.setUnsafe(j, i, A.atUnsafe(j, i) * f); // col i *= f
+            }
+        }
+    }
+}
+
+/// Reduces A in place to upper Hessenberg form by Householder similarity
+/// transforms. Deterministic: no start vector and no breakdown (unlike the
+/// Arnoldi reduction). For a symmetric A the result is tridiagonal.
+/// Eigenvalues are preserved (A := HₖAHₖ).
+fn hessenbergReduce(alloc: std.mem.Allocator, A: Mat) std.mem.Allocator.Error!void {
+    const n = A.rows;
+    if (n <= 2) return;
+    const v = try alloc.alloc(f64, n);
+    defer alloc.free(v);
+    for (0..n - 2) |k| {
+        var nrm: f64 = 0;
+        for (k + 1..n) |i| nrm += A.atUnsafe(i, k) * A.atUnsafe(i, k);
+        nrm = @sqrt(nrm);
+        if (nrm == 0) continue;
+        const x0 = A.atUnsafe(k + 1, k);
+        const alpha: f64 = if (x0 >= 0) -nrm else nrm; // stable sign
+        v[k + 1] = x0 - alpha;
+        for (k + 2..n) |i| v[i] = A.atUnsafe(i, k);
+        var vv: f64 = 0;
+        for (k + 1..n) |i| vv += v[i] * v[i];
+        if (vv == 0) continue;
+        const beta = 2.0 / vv;
+        // Left:  A := (I - beta v vᵀ) A
+        for (0..n) |j| {
+            var dt: f64 = 0;
+            for (k + 1..n) |i| dt += v[i] * A.atUnsafe(i, j);
+            const w = beta * dt;
+            for (k + 1..n) |i| A.setUnsafe(i, j, A.atUnsafe(i, j) - v[i] * w);
+        }
+        // Right: A := A (I - beta v vᵀ)
+        for (0..n) |i| {
+            var dt: f64 = 0;
+            for (k + 1..n) |j| dt += A.atUnsafe(i, j) * v[j];
+            const w = beta * dt;
+            for (k + 1..n) |j| A.setUnsafe(i, j, A.atUnsafe(i, j) - w * v[j]);
+        }
+    }
+}
+
 fn eig2x2(a: f64, b: f64, c: f64, d: f64) [2]Complex {
     const tr = a + d;
     const det = a * d - b * c;
@@ -123,9 +207,10 @@ fn rotCols(H: Mat, i: usize, g: Givens, m: usize) void {
 /// Caller owns the returned slice. If 'iters' is non-null, the QR sweep count
 /// is written to it.
 ///
-/// Reduces A to upper Hessenberg form once (Householder similarity), then runs
-/// the QR algorithm with Wilkinson shift and deflation, applying each shifted
-/// sweep as in-place Givens rotations. For a symmetric A the reduction yields a tridiagonal matrix.
+/// Balances A (Parlett-Reinsch) and reduces it to upper Hessenberg form once
+/// (Householder similarity), then runs the QR algorithm with Wilkinson shift
+/// and deflation, applying each shifted sweep as in-place Givens rotations.
+/// For a symmetric A the reduction yields a tridiagonal matrix.
 ///
 /// Accepts any real square matrix.
 ///
@@ -145,42 +230,13 @@ pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
     var Ak = try A.clone();
     defer Ak.deinit();
 
-    // Reduce A to upper Hessenberg form once (Householder similarity), so the
-    // single-Givens-per-column sweep below is valid and each sweep is O(n²).
-    // For a symmetric A this produces a tridiagonal matrix. Eigenvalues are
-    // preserved (Ak := HₖAkHₖ), which is all we read out at the end.
-    if (n > 2) {
-        const v = try alloc.alloc(f64, n);
-        defer alloc.free(v);
-        for (0..n - 2) |k| {
-            var nrm: f64 = 0;
-            for (k + 1..n) |i| nrm += Ak.atUnsafe(i, k) * Ak.atUnsafe(i, k);
-            nrm = @sqrt(nrm);
-            if (nrm == 0) continue;
-            const x0 = Ak.atUnsafe(k + 1, k);
-            const alpha: f64 = if (x0 >= 0) -nrm else nrm; // stable sign
-            v[k + 1] = x0 - alpha;
-            for (k + 2..n) |i| v[i] = Ak.atUnsafe(i, k);
-            var vv: f64 = 0;
-            for (k + 1..n) |i| vv += v[i] * v[i];
-            if (vv == 0) continue;
-            const beta = 2.0 / vv;
-            // Left:  Ak := (I - beta v vᵀ) Ak
-            for (0..n) |j| {
-                var dt: f64 = 0;
-                for (k + 1..n) |i| dt += v[i] * Ak.atUnsafe(i, j);
-                const w = beta * dt;
-                for (k + 1..n) |i| Ak.setUnsafe(i, j, Ak.atUnsafe(i, j) - v[i] * w);
-            }
-            // Right: Ak := Ak (I - beta v vᵀ)
-            for (0..n) |i| {
-                var dt: f64 = 0;
-                for (k + 1..n) |j| dt += Ak.atUnsafe(i, j) * v[j];
-                const w = beta * dt;
-                for (k + 1..n) |j| Ak.setUnsafe(i, j, Ak.atUnsafe(i, j) - w * v[j]);
-            }
-        }
-    }
+    // Balance, then reduce to upper Hessenberg form once (Householder
+    // similarity), so the single-Givens-per-column sweep below is valid and
+    // each sweep is O(n²). For a symmetric A the reduction produces a
+    // tridiagonal matrix. Both steps preserve the eigenvalues, which is all
+    // we read out at the end.
+    balance(Ak);
+    try hessenbergReduce(alloc, Ak);
 
     const rotation = try alloc.alloc(Givens, n);
     defer alloc.free(rotation);
@@ -236,9 +292,10 @@ pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
 /// Caller owns the returned slice. If 'iters' is non-null, the QR sweep count
 /// is written to it.
 ///
-/// Reduces A to upper Hessenberg form once (Householder similarity), then runs
-/// the QR algorithm with Wilkinson shift and deflation, applying each shifted
-/// sweep as in-place Givens rotations. For a symmetric A the reduction yields a tridiagonal matrix.
+/// Balances A (Parlett-Reinsch) and reduces it to upper Hessenberg form once
+/// (Householder similarity), then runs the QR algorithm with Wilkinson shift
+/// and deflation, applying each shifted sweep as in-place Givens rotations.
+/// For a symmetric A the reduction yields a tridiagonal matrix.
 ///
 /// Accepts any real square matrix, including matrices with complex-conjugate
 /// eigenvalue pairs. The iteration stays in real arithmetic (real Schur form):
@@ -257,42 +314,13 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
     var Ak = try A.clone();
     defer Ak.deinit();
 
-    // Reduce A to upper Hessenberg form once (Householder similarity), so the
-    // single-Givens-per-column sweep below is valid and each sweep is O(n²).
-    // For a symmetric A this produces a tridiagonal matrix. Eigenvalues are
-    // preserved (Ak := HₖAkHₖ), which is all we read out at the end.
-    if (n > 2) {
-        const v = try alloc.alloc(f64, n);
-        defer alloc.free(v);
-        for (0..n - 2) |k| {
-            var nrm: f64 = 0;
-            for (k + 1..n) |i| nrm += Ak.atUnsafe(i, k) * Ak.atUnsafe(i, k);
-            nrm = @sqrt(nrm);
-            if (nrm == 0) continue;
-            const x0 = Ak.atUnsafe(k + 1, k);
-            const alpha: f64 = if (x0 >= 0) -nrm else nrm; // stable sign
-            v[k + 1] = x0 - alpha;
-            for (k + 2..n) |i| v[i] = Ak.atUnsafe(i, k);
-            var vv: f64 = 0;
-            for (k + 1..n) |i| vv += v[i] * v[i];
-            if (vv == 0) continue;
-            const beta = 2.0 / vv;
-            // Left:  Ak := (I - beta v vᵀ) Ak
-            for (0..n) |j| {
-                var dt: f64 = 0;
-                for (k + 1..n) |i| dt += v[i] * Ak.atUnsafe(i, j);
-                const w = beta * dt;
-                for (k + 1..n) |i| Ak.setUnsafe(i, j, Ak.atUnsafe(i, j) - v[i] * w);
-            }
-            // Right: Ak := Ak (I - beta v vᵀ)
-            for (0..n) |i| {
-                var dt: f64 = 0;
-                for (k + 1..n) |j| dt += Ak.atUnsafe(i, j) * v[j];
-                const w = beta * dt;
-                for (k + 1..n) |j| Ak.setUnsafe(i, j, Ak.atUnsafe(i, j) - w * v[j]);
-            }
-        }
-    }
+    // Balance, then reduce to upper Hessenberg form once (Householder
+    // similarity), so the single-Givens-per-column sweep below is valid and
+    // each sweep is O(n²). For a symmetric A the reduction produces a
+    // tridiagonal matrix. Both steps preserve the eigenvalues, which is all
+    // we read out at the end.
+    balance(Ak);
+    try hessenbergReduce(alloc, Ak);
 
     const rotation = try alloc.alloc(Givens, n);
     defer alloc.free(rotation);
@@ -396,6 +424,36 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
     return eigs;
 }
 
+/// Returns the eigenvalues of an n×n real matrix A. Caller owns the returned
+/// slice. If 'iters' is non-null, the QR sweep count is written to it.
+///
+/// Delegates to 'qrAlgorithm': balancing, then a deterministic Householder
+/// Hessenberg reduction (no start vector, no breakdown), then shifted QR
+/// with deflation.
+///
+/// LIMITATION: same real-spectrum restriction as 'qrAlgorithm' — matrices
+/// with complex-conjugate eigenvalue pairs will not converge; use
+/// 'eigenvaluesComplex' for those.
+///
+/// Returns an EigenError.NotSquare if A is not square.
+pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]f64 {
+    return qrAlgorithm(alloc, A, max_iter, tolerance, iters);
+}
+
+/// Returns the eigenvalues of an n×n real matrix A, including
+/// complex-conjugate pairs. Caller owns the returned slice. If 'iters' is
+/// non-null, the QR sweep count is written to it.
+///
+/// Delegates to 'qrAlgorithmComplex': balancing, then a deterministic
+/// Householder Hessenberg reduction (no start vector, no breakdown), then
+/// shifted QR in real arithmetic (real Schur form) with 2x2 blocks
+/// extracted analytically.
+///
+/// Returns an EigenError.NotSquare if A is not square.
+pub fn eigenvaluesComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]Complex {
+    return qrAlgorithmComplex(alloc, A, max_iter, tolerance, iters);
+}
+
 /// Returns the 'm' eigenvalues of an m×m matrix A. Caller owns the returned
 /// slice. If 'iters' is non-null, the QR sweep count is written to it.
 ///
@@ -404,9 +462,10 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
 ///
 /// NOTE: 'qrAlgorithm' already performs its own Hessenberg reduction, so for a
 /// dense full-spectrum problem this path reduces twice and is slower than
-/// calling 'qrAlgorithm' directly — prefer that here. This pipeline exists to
-/// exercise the Arnoldi reduction; its real niche is large, sparse matrices
-/// where only a few eigenvalues are wanted (run Arnoldi to a small dimension).
+/// calling 'qrAlgorithm' (or 'eigenvalues') directly — prefer those here.
+/// This pipeline exists to exercise the Arnoldi reduction; its real niche is
+/// large, sparse matrices where only a few eigenvalues are wanted (run
+/// Arnoldi to a small dimension).
 ///
 /// LIMITATION: same real-spectrum restriction as 'qrAlgorithm' — intended for
 /// symmetric / real-eigenvalue matrices; complex eigenvalues are not supported.
@@ -414,7 +473,7 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
 /// the Arnoldi process may break down early and return only a partial spectrum.
 ///
 /// Returns an EigenError.NotSquare if A is not square.
-pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]f64 {
+pub fn eigenvaluesArnoldi(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]f64 {
     if (A.rows != A.cols) return EigenError.NotSquare;
     const m = A.rows;
 
@@ -445,18 +504,19 @@ pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
 /// Reduces A to upper Hessenberg form with a full Arnoldi run, then extracts
 /// the eigenvalues with 'qrAlgorithm'.
 ///
-/// NOTE: 'qrAlgorithm' already performs its own Hessenberg reduction, so for a
-/// dense full-spectrum problem this path reduces twice and is slower than
-/// calling 'qrAlgorithm' directly — prefer that here. This pipeline exists to
-/// exercise the Arnoldi reduction; its real niche is large, sparse matrices
-/// where only a few eigenvalues are wanted (run Arnoldi to a small dimension).
+/// NOTE: 'qrAlgorithmComplex' already performs its own Hessenberg reduction,
+/// so for a dense full-spectrum problem this path reduces twice and is slower
+/// than calling 'qrAlgorithmComplex' (or 'eigenvaluesComplex') directly —
+/// prefer those here. This pipeline exists to exercise the Arnoldi reduction;
+/// its real niche is large, sparse matrices where only a few eigenvalues are
+/// wanted (run Arnoldi to a small dimension).
 ///
 /// Complex-conjugate eigenvalue pairs are supported via 'qrAlgorithmComplex'.
 /// A fixed all-ones start vector is used, so for an input it fails to excite
 /// the Arnoldi process may break down early and return only a partial spectrum.
 ///
 /// Returns an EigenError.NotSquare if A is not square.
-pub fn eigenvaluesComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]Complex {
+pub fn eigenvaluesComplexArnoldi(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]Complex {
     if (A.rows != A.cols) return EigenError.NotSquare;
     const m = A.rows;
 
@@ -479,6 +539,53 @@ pub fn eigenvaluesComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
     }
 
     return qrAlgorithmComplex(alloc, H, max_iter, tolerance, iters);
+}
+
+/// Returns the roots of a real polynomial as the eigenvalues of its
+/// companion matrix (via 'qrAlgorithmComplex'). Caller owns the returned
+/// slice, which has length = the degree of the polynomial.
+///
+/// 'coeffs' are in descending degree, matching 'charPoly':
+///   coeffs[0]·xⁿ + coeffs[1]·xⁿ⁻¹ + … + coeffs[n]
+///
+/// Leading zero coefficients are stripped. Trailing zero coefficients
+/// (roots at x = 0) are deflated exactly instead of going through QR.
+/// A constant, empty, or all-zero polynomial has no roots: an empty slice
+/// is returned.
+pub fn roots(alloc: std.mem.Allocator, coeffs: []const f64, max_iter: usize, tolerance: f64) (EigenError || std.mem.Allocator.Error)![]Complex {
+    // Strip leading zeros to find the true degree.
+    var lead: usize = 0;
+    while (lead < coeffs.len and coeffs[lead] == 0.0) lead += 1;
+    const p = coeffs[lead..];
+    if (p.len < 2) return alloc.alloc(Complex, 0);
+    const n = p.len - 1; // true degree
+
+    // Deflate roots at zero exactly (cheaper and more accurate than QR).
+    var tz: usize = 0;
+    while (tz < n and p[p.len - 1 - tz] == 0.0) tz += 1;
+    const q = p[0 .. p.len - tz];
+    const m = q.len - 1; // degree after removing the roots at zero
+
+    const out = try alloc.alloc(Complex, n);
+    errdefer alloc.free(out);
+    for (m..n) |i| out[i] = Complex.init(0, 0);
+    if (m == 0) return out;
+    if (m == 1) {
+        out[0] = Complex.init(-q[1] / q[0], 0);
+        return out;
+    }
+
+    // Companion matrix, top-row form. Balancing inside qrAlgorithmComplex
+    // takes care of widely scaled coefficients.
+    var C = try Mat.initZero(alloc, m, m);
+    defer C.deinit();
+    for (0..m) |j| C.setUnsafe(0, j, -q[j + 1] / q[0]);
+    for (1..m) |i| C.setUnsafe(i, i - 1, 1.0);
+
+    const eigs = try qrAlgorithmComplex(alloc, C, max_iter, tolerance, null);
+    defer alloc.free(eigs);
+    @memcpy(out[0..m], eigs);
+    return out;
 }
 
 /// LEGACY: superseded by 'qrAlgorithm', kept only for reference/comparison.
@@ -799,7 +906,7 @@ test "QR algorithm: eigenvalues of symmetric matrices" {
     }
 }
 
-test "eigenvalues: Arnoldi + QR pipeline (symmetric)" {
+test "eigenvaluesArnoldi: Arnoldi + QR pipeline (symmetric)" {
     const alloc = testing.allocator;
 
     // Dense symmetric 3x3 (distinct eigenvalues) -> exercises the reduction.
@@ -812,7 +919,7 @@ test "eigenvalues: Arnoldi + QR pipeline (symmetric)" {
             .{ 1, 2, 4 },
         });
 
-        const eigs = try eigenvalues(alloc, A, 1000, 1e-12, null);
+        const eigs = try eigenvaluesArnoldi(alloc, A, 1000, 1e-12, null);
         defer alloc.free(eigs);
         std.mem.sort(f64, eigs, {}, std.sort.desc(f64));
 
@@ -831,7 +938,7 @@ test "eigenvalues: Arnoldi + QR pipeline (symmetric)" {
             .{ 0, 0, 1, 1 },
         });
 
-        const eigs = try eigenvalues(alloc, A, 1000, 1e-12, null);
+        const eigs = try eigenvaluesArnoldi(alloc, A, 1000, 1e-12, null);
         defer alloc.free(eigs);
         std.mem.sort(f64, eigs, {}, std.sort.desc(f64));
 
@@ -996,7 +1103,7 @@ test "qrAlgorithmComplex: symmetric matrix regression, all imaginary parts zero"
     }
 }
 
-test "eigenvaluesComplex: Arnoldi + complex QR pipeline" {
+test "eigenvaluesComplexArnoldi: Arnoldi + complex QR pipeline" {
     const alloc = testing.allocator;
 
     // Same 4x4 companion as above (all-ones start vector is not an
@@ -1010,7 +1117,7 @@ test "eigenvaluesComplex: Arnoldi + complex QR pipeline" {
         .{ 0, 0, 1, 0 },
     });
 
-    const eigs = try eigenvaluesComplex(alloc, A, 1000, 1e-12, null);
+    const eigs = try eigenvaluesComplexArnoldi(alloc, A, 1000, 1e-12, null);
     defer alloc.free(eigs);
     std.mem.sort(Complex, eigs, {}, lessComplex);
 
@@ -1045,6 +1152,208 @@ test "qrAlgorithmComplex: no leaks on allocation failure" {
             } else |e| {
                 try std.testing.expect(e == error.OutOfMemory);
             }
+        } else |e| {
+            try std.testing.expect(e == error.OutOfMemory);
+        }
+    }
+}
+
+test "balancing: badly scaled matrix recovers accurate eigenvalues" {
+    const alloc = testing.allocator;
+
+    // D C D⁻¹ where C is the companion of (x-1)(x-2)(x-3) and
+    // D = diag(1, 1e6, 1e12). Entries span 1e-12 .. 1e12; without balancing
+    // the QR iteration loses roughly half the significant digits here.
+    // The spectrum is exactly {1, 2, 3}.
+    var A = try Mat.initZero(alloc, 3, 3);
+    defer A.deinit();
+    setMat(A, [_][3]f64{
+        .{ 6.0, -1.1e-5, 6.0e-12 },
+        .{ 1.0e6, 0.0, 0.0 },
+        .{ 0.0, 1.0e6, 0.0 },
+    });
+
+    const eigs = try qrAlgorithm(alloc, A, 1000, 1e-12, null);
+    defer alloc.free(eigs);
+    std.mem.sort(f64, eigs, {}, std.sort.desc(f64));
+
+    try testing.expectApproxEqAbs(@as(f64, 3.0), eigs[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f64, 2.0), eigs[1], 1e-6);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), eigs[2], 1e-6);
+
+    // Same matrix through the complex path.
+    const ceigs = try qrAlgorithmComplex(alloc, A, 1000, 1e-12, null);
+    defer alloc.free(ceigs);
+    try expectEigContains(ceigs, 1.0, 0.0, 1e-6);
+    try expectEigContains(ceigs, 2.0, 0.0, 1e-6);
+    try expectEigContains(ceigs, 3.0, 0.0, 1e-6);
+}
+
+test "eigenvalues / eigenvaluesComplex: delegate to the QR algorithms" {
+    const alloc = testing.allocator;
+
+    // Real spectrum via the friendly wrapper.
+    {
+        var A = try Mat.initZero(alloc, 2, 2);
+        defer A.deinit();
+        setMat(A, [_][2]f64{ .{ 2, 1 }, .{ 1, 2 } });
+
+        const eigs = try eigenvalues(alloc, A, 500, 1e-12, null);
+        defer alloc.free(eigs);
+        std.mem.sort(f64, eigs, {}, std.sort.desc(f64));
+        try testing.expectApproxEqAbs(@as(f64, 3.0), eigs[0], 1e-9);
+        try testing.expectApproxEqAbs(@as(f64, 1.0), eigs[1], 1e-9);
+    }
+
+    // Complex pair via the friendly wrapper. This companion matrix makes the
+    // all-ones-start Arnoldi pipeline unreliable; the Householder route has
+    // no such failure mode.
+    {
+        var A = try Mat.initZero(alloc, 3, 3);
+        defer A.deinit();
+        setMat(A, [_][3]f64{
+            .{ 3, -7, 5 },
+            .{ 1, 0, 0 },
+            .{ 0, 1, 0 },
+        });
+
+        const eigs = try eigenvaluesComplex(alloc, A, 1000, 1e-12, null);
+        defer alloc.free(eigs);
+        try expectEigContains(eigs, 1.0, 0.0, 1e-8);
+        try expectEigContains(eigs, 1.0, 2.0, 1e-8);
+        try expectEigContains(eigs, 1.0, -2.0, 1e-8);
+    }
+}
+
+test "roots: real and complex roots, descending coefficients" {
+    const alloc = testing.allocator;
+
+    // x² - 3x + 2 = (x-1)(x-2)
+    {
+        const rs = try roots(alloc, &[_]f64{ 1, -3, 2 }, 1000, 1e-12);
+        defer alloc.free(rs);
+        try testing.expectEqual(@as(usize, 2), rs.len);
+        try expectEigContains(rs, 1.0, 0.0, 1e-9);
+        try expectEigContains(rs, 2.0, 0.0, 1e-9);
+    }
+
+    // Non-monic: 2x² - 6x + 4 has the same roots.
+    {
+        const rs = try roots(alloc, &[_]f64{ 2, -6, 4 }, 1000, 1e-12);
+        defer alloc.free(rs);
+        try testing.expectEqual(@as(usize, 2), rs.len);
+        try expectEigContains(rs, 1.0, 0.0, 1e-9);
+        try expectEigContains(rs, 2.0, 0.0, 1e-9);
+    }
+
+    // (x²-2x+5)(x²-4x+13) = x⁴ - 6x³ + 26x² - 46x + 65, roots 1±2i, 2±3i.
+    {
+        const rs = try roots(alloc, &[_]f64{ 1, -6, 26, -46, 65 }, 1000, 1e-12);
+        defer alloc.free(rs);
+        try testing.expectEqual(@as(usize, 4), rs.len);
+        try expectEigContains(rs, 1.0, 2.0, 1e-8);
+        try expectEigContains(rs, 1.0, -2.0, 1e-8);
+        try expectEigContains(rs, 2.0, 3.0, 1e-8);
+        try expectEigContains(rs, 2.0, -3.0, 1e-8);
+    }
+}
+
+test "roots: degenerate shapes (leading/trailing zeros, constants, linear)" {
+    const alloc = testing.allocator;
+
+    // Leading zeros are stripped: [0, 0, 1, -3, 2] is still x² - 3x + 2.
+    {
+        const rs = try roots(alloc, &[_]f64{ 0, 0, 1, -3, 2 }, 1000, 1e-12);
+        defer alloc.free(rs);
+        try testing.expectEqual(@as(usize, 2), rs.len);
+        try expectEigContains(rs, 1.0, 0.0, 1e-9);
+        try expectEigContains(rs, 2.0, 0.0, 1e-9);
+    }
+
+    // Trailing zeros are exact roots at 0: x³ - x² = x²(x - 1).
+    {
+        const rs = try roots(alloc, &[_]f64{ 1, -1, 0, 0 }, 1000, 1e-12);
+        defer alloc.free(rs);
+        try testing.expectEqual(@as(usize, 3), rs.len);
+        var zeros: usize = 0;
+        for (rs) |r| {
+            if (r.re == 0.0 and r.im == 0.0) zeros += 1;
+        }
+        try testing.expectEqual(@as(usize, 2), zeros);
+        try expectEigContains(rs, 1.0, 0.0, 1e-9);
+    }
+
+    // Pure powers of x: x² -> two exact zero roots, no QR involved.
+    {
+        const rs = try roots(alloc, &[_]f64{ 1, 0, 0 }, 1000, 1e-12);
+        defer alloc.free(rs);
+        try testing.expectEqual(@as(usize, 2), rs.len);
+        for (rs) |r| {
+            try testing.expectEqual(@as(f64, 0.0), r.re);
+            try testing.expectEqual(@as(f64, 0.0), r.im);
+        }
+    }
+
+    // Linear: 2x - 4 -> 2, solved analytically.
+    {
+        const rs = try roots(alloc, &[_]f64{ 2, -4 }, 1000, 1e-12);
+        defer alloc.free(rs);
+        try testing.expectEqual(@as(usize, 1), rs.len);
+        try testing.expectApproxEqAbs(@as(f64, 2.0), rs[0].re, 1e-12);
+        try testing.expectApproxEqAbs(@as(f64, 0.0), rs[0].im, 1e-12);
+    }
+
+    // Constant, empty, and all-zero polynomials have no roots.
+    {
+        const c = try roots(alloc, &[_]f64{5.0}, 1000, 1e-12);
+        defer alloc.free(c);
+        try testing.expectEqual(@as(usize, 0), c.len);
+
+        const e = try roots(alloc, &[_]f64{}, 1000, 1e-12);
+        defer alloc.free(e);
+        try testing.expectEqual(@as(usize, 0), e.len);
+
+        const z = try roots(alloc, &[_]f64{ 0, 0, 0 }, 1000, 1e-12);
+        defer alloc.free(z);
+        try testing.expectEqual(@as(usize, 0), z.len);
+    }
+}
+
+test "roots: charPoly of a companion round-trips (root locus path)" {
+    const alloc = testing.allocator;
+
+    // The app's hottest path: charPoly -> roots. Build A with known spectrum
+    // {1, 2, 3}, take its characteristic polynomial (descending, monic), and
+    // recover the spectrum as roots.
+    var A = try Mat.initZero(alloc, 3, 3);
+    defer A.deinit();
+    setMat(A, [_][3]f64{
+        .{ 6, -11, 6 },
+        .{ 1, 0, 0 },
+        .{ 0, 1, 0 },
+    });
+
+    var coeffs: [4]f64 = undefined;
+    try mat.charPoly(alloc, A, &coeffs);
+
+    const rs = try roots(alloc, &coeffs, 1000, 1e-12);
+    defer alloc.free(rs);
+    try testing.expectEqual(@as(usize, 3), rs.len);
+    try expectEigContains(rs, 1.0, 0.0, 1e-8);
+    try expectEigContains(rs, 2.0, 0.0, 1e-8);
+    try expectEigContains(rs, 3.0, 0.0, 1e-8);
+}
+
+test "roots: no leaks on allocation failure" {
+    const coeffs = [_]f64{ 1, -6, 26, -46, 65 };
+
+    for (0..60) |fail_index| {
+        var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const alloc = fa.allocator();
+
+        const res = roots(alloc, &coeffs, 1000, 1e-12);
+        if (res) |rs| {
+            alloc.free(rs);
         } else |e| {
             try std.testing.expect(e == error.OutOfMemory);
         }
