@@ -1,6 +1,6 @@
 const std = @import("std");
 const vec = @import("vec.zig");
-const gj = @import("../linalg/gaussjordan.zig");
+const lu_mod = @import("../linalg/lu.zig");
 const err_mod = @import("../error.zig");
 const sclr = @import("scalar.zig");
 
@@ -13,8 +13,8 @@ pub const InverseError = error{
 } || err_mod.Common;
 
 /// Everything expm() can fail with: its own shape checks plus the
-/// Gauss-Jordan solve of the Pade system and allocation.
-pub const ExpmError = MatError || gj.GaussJordanError || std.mem.Allocator.Error;
+/// LU solve of the Pade system and allocation.
+pub const ExpmError = MatError || lu_mod.LUError || std.mem.Allocator.Error;
 
 /// The Matrix type constructor.
 /// The data is stored as one flat slice, row-major.
@@ -860,8 +860,9 @@ pub fn charPoly(
 /// Where Q = (V - U) and P = (V + U).
 ///
 /// The inverse of R is not computed explicitly. The system is solved
-/// via Gauss-Jordan for numerical stability, as explicit inverses CAN
-/// introduce large errors.
+/// via LU with partial pivoting for numerical stability, as explicit
+/// inverses CAN introduce large errors. Q is factored once and reused,
+/// so each column costs O(n^2) instead of a full O(n^3) elimination.
 fn solvePadeSystem(alloc: std.mem.Allocator, Q: anytype, P: @TypeOf(Q)) !Matrix(ElementOf(@TypeOf(Q))) {
     const T = ElementOf(@TypeOf(Q));
     const n = Q.rows; // square
@@ -871,13 +872,16 @@ fn solvePadeSystem(alloc: std.mem.Allocator, Q: anytype, P: @TypeOf(Q)) !Matrix(
     var retMat = try Matrix(T).initZero(alloc, n, n);
     errdefer retMat.deinit();
 
+    var f = try lu_mod.lu(alloc, Q);
+    defer f.deinit();
+
     // Build RHS
     for (0..n) |col| {
         for (0..n) |i| {
             try rhs.set(i, try P.at(i, col));
         }
         // Solve Q * x = RHS
-        var res = try gj.gaussJordan(alloc, Q, rhs);
+        var res = try f.solve(alloc, rhs);
         try retMat.setCol(col, res.data);
         res.deinit();
     }
@@ -929,14 +933,11 @@ fn pade13(alloc: std.mem.Allocator, As: anytype, A2: @TypeOf(As), A4: @TypeOf(As
     try copyMat(temp2, U);
 }
 
-// TODO: Improve this function. Make general.
-/// Recursively determines the determinant for larger than 3x3 matrices.
+/// Computes the determinant.
 ///
-/// WARNING: Because of recursive nature and therefore allocation / deallocation,
-/// use CAUTION when used on large matrices! This will be a factor for 5x5 matrices or larger,
-/// because 1 iteration over a 5x5 matrix will spawn 1 4x4 child,
-/// which will in turn spawn 4 3x3 children. The lowest children
-/// are only alloced one at a time.
+/// Uses the closed forms for n <= 3. Larger matrices are LU-decomposed
+/// (O(n^3)), where det = +-(product of U's diagonal). A singular matrix
+/// returns 0.
 ///
 /// The Matrix must be square.
 pub fn determinant(alloc: std.mem.Allocator, mat: anytype) (MatError || std.mem.Allocator.Error)!ElementOf(@TypeOf(mat)) {
@@ -971,45 +972,15 @@ pub fn determinant(alloc: std.mem.Allocator, mat: anytype) (MatError || std.mem.
         const negs = sclr.add(sclr.add(sclr.mul(sclr.mul(c, e), g), sclr.mul(sclr.mul(b, d), i)), sclr.mul(sclr.mul(a, f), h));
         return sclr.sub(pos, negs);
     }
-    const expand_row: usize = 0;
-
-    var sum = sclr.zero(T);
-
-    for (0..n) |col| {
-        const a = try mat.at(expand_row, col);
-        if (sclr.isZeroApprox(a, 1e-8)) continue;
-        // sign = (-1)^(row + col)
-        const sign: T = if (((expand_row + col) & 1) == 0) sclr.one(T) else sclr.neg(sclr.one(T));
-        var minor = try makeMinor(alloc, mat, expand_row, col);
-
-        const det_minor = try determinant(alloc, minor);
-
-        minor.deinit(); // no longer needed.
-        sum = sclr.add(sum, sclr.mul(sclr.mul(sign, a), det_minor));
-    }
-    return sum;
-}
-
-/// Makes a copy of the matrix, but skips 1 row and 1 coloumn.
-fn makeMinor(alloc: std.mem.Allocator, mat: anytype, skip_row: usize, skip_col: usize) !@TypeOf(mat) {
-    const n = mat.rows;
-    var m = try @TypeOf(mat).initZero(alloc, n - 1, n - 1);
-
-    var rr: usize = 0;
-    for (0..n) |r| {
-        if (r == skip_row) continue;
-
-        var cc: usize = 0;
-        for (0..n) |c| {
-            if (c == skip_col) continue;
-
-            try m.set(rr, cc, try mat.at(r, c));
-
-            cc += 1;
-        }
-        rr += 1;
-    }
-    return m;
+    // n > 3: LU with partial pivoting, det = +-(product of U's diagonal).
+    // O(n^3), where cofactor expansion is O(n!).
+    var f = lu_mod.lu(alloc, mat) catch |e| switch (e) {
+        error.Singular => return sclr.zero(T),
+        error.NotSquare => unreachable, // squareness checked above
+        else => |err| return err,
+    };
+    defer f.deinit();
+    return f.det();
 }
 
 /// Determines if a matrix is lower triangular.
@@ -1118,7 +1089,7 @@ test "Matrix(Complex): smoke test of generic paths" {
     try std.testing.expect(isUpperTriangular(At, 1e-12));
     try std.testing.expect(isLowerTriangular(At, 1e-12));
 
-    // 4x4 determinant exercises makeMinor recursion
+    // 4x4 determinant exercises the LU path
     var D = try CMat.initIdentity(alloc, 4, 4);
     defer D.deinit();
     try D.set(3, 3, Cx.init(0, 1));

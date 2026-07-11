@@ -9,6 +9,7 @@ pub const mat = @import("core/mat.zig");
 
 pub const cholesky = @import("linalg/cholesky.zig");
 pub const gaussJordan = @import("linalg/gaussjordan.zig");
+pub const LU = @import("linalg/lu.zig");
 pub const QR = @import("linalg/qrdecomposition.zig");
 pub const signal = @import("signal/lti_conversion.zig");
 pub const control = @import("control/pid.zig");
@@ -34,6 +35,7 @@ test {
     _ = @import("core/mat.zig");
     _ = @import("linalg/cholesky.zig");
     _ = @import("linalg/gaussjordan.zig");
+    _ = @import("linalg/lu.zig");
     _ = @import("signal/lti_conversion.zig");
     _ = @import("linalg/qrdecomposition.zig");
     _ = @import("ode/runge_kutta.zig");

@@ -140,13 +140,21 @@ defer alloc.free(ceigs);
 
 ### Solve Ax = b
 ```zig
-var x = try znum.gaussJordan.gaussJordan(alloc, A, b);
+var x = try znum.LU.solve(alloc, A, b);
 defer x.deinit();
 
-// also: znum.cholesky.cholesky, znum.QR.qrDecomposition
+// LU: factor once, then each solve is O(n^2)
+var f = try znum.LU.lu(alloc, A);
+defer f.deinit();
+var x2 = try f.solve(alloc, b);
+defer x2.deinit();
+const det = f.det(); // det(A) from the factorization, O(n)
+
+// also: znum.gaussJordan.gaussJordan, znum.cholesky.cholesky,
+// znum.QR.qrDecomposition
 ```
 
-NB: gaussJordan pivots on |.|, so complex systems work as-is.
+NB: lu and gaussJordan pivot on |.|, so complex systems work as-is.
 qrDecomposition uses Householder reflections (I - 2vv^H); Q is unitary
 and R = Q^H * A for complex matrices.
 
