@@ -73,4 +73,16 @@ pub fn build(b: *std.Build) void {
     vec_example.root_module.addImport("znumerics", mod);
     const run_vec_example = b.addRunArtifact(vec_example);
     example_step.dependOn(&run_vec_example.step);
+
+    const lsim_example = b.addExecutable(.{
+        .name = "lsim",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/lsim.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    lsim_example.root_module.addImport("znumerics", mod);
+    const run_lsim_example = b.addRunArtifact(lsim_example);
+    example_step.dependOn(&run_lsim_example.step);
 }

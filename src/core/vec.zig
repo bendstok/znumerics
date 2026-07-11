@@ -243,6 +243,12 @@ pub fn Vector(comptime T: type) type {
                 self.setUnsafe(idx, sclr.sub(self.atUnsafe(idx), toSub.atUnsafe(idx)));
             }
         }
+
+        /// Returns a vector which is a deep copy of itself
+        pub fn clone(self: Self) std.mem.Allocator.Error!Self {
+            const data = try self.alloc.dupe(T, self.data);
+            return .{ .alloc = self.alloc, .data = data, .colvec = self.colvec };
+        }
     };
 }
 // Backwards compatibility.

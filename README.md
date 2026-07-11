@@ -158,6 +158,48 @@ NB: lu and gaussJordan pivot on |.|, so complex systems work as-is.
 qrDecomposition uses Householder reflections (I - 2vv^H); Q is unitary
 and R = Q^H * A for complex matrices.
 
+### Simulate LTI systems (lsim)
+```zig
+// x' = -x + u, y = x
+var ss = try znum.StateSpace.initContinuous(alloc, 1);
+defer ss.deinit();
+try ss.A.set(0, 0, -1.0);
+try ss.B.set(0, 1.0);
+try ss.C.set(0, 1.0);
+
+// Open loop: (alloc, system, input signal, dt, optional x0)
+const u = [_]f64{2.0} ** 1001;
+var res = try znum.lsim.lsim(alloc, ss, &u, 1e-3, null);
+defer res.deinit();
+// res.t, res.y, res.x (state trajectory, coloumn k is x[k])
+
+// Closed loop: u[k] = kp * (r - y[k]) via a ctx + comptime fn.
+// The ctx carries the controller state; here a stateless P-controller.
+const P = struct {
+    kp: f64,
+    r: f64,
+    fn w(self: @This(), k: usize, t: f64, x: znum.Vec) f64 {
+        _ = k;
+        _ = t;
+        return self.kp * (self.r - x.atUnsafe(0));
+    }
+};
+var cl = try znum.lsim.lsimFn(alloc, ss, 1e-3, 5000, P{ .kp = 9.0, .r = 1.0 }, P.w, null);
+defer cl.deinit();
+// y settles at kp * r / (1 + kp) = 0.9
+
+// also: dlsim/dlsimFn (discrete systems), step, impulse
+```
+
+NB: the input is held constant over each step (ZOH), which is exact at
+the sample instants for piecewise-constant u. The callback sees the
+state *before* the step, so feedback has no algebraic loop.
+
+NB: for a constant u there is no need to build the input slice:
+step covers u = 1 (scale the output for other heights, the system is
+linear), and lsimFn with a comptime fn returning the constant covers
+the rest without the allocation.
+
 ### ODE (RK4)
 ```zig
 // x' = -x + u, u = 2.0, dt = 1e-3

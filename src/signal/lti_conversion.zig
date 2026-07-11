@@ -82,6 +82,18 @@ pub const StateSpace = struct {
         self.D.deinit();
         self.* = undefined;
     }
+
+    /// Returns a deep clone of the StateSpace.
+    pub fn clone(self: StateSpace) std.mem.Allocator.Error!StateSpace {
+        var A = try self.A.clone();
+        errdefer A.deinit();
+        var B = try self.B.clone();
+        errdefer B.deinit();
+        var C = try self.C.clone();
+        errdefer C.deinit();
+        const D = try self.D.clone();
+        return .{ .A = A, .B = B, .C = C, .D = D, .alloc = self.alloc, .domain = self.domain, .dt = self.dt };
+    }
 };
 
 /// Unified transfer function representation for both
