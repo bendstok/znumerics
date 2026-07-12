@@ -57,6 +57,10 @@ pub fn main() !void {
     std.debug.print("Matrix 4, rows 0 and 1 swapped: \n", .{});
     try m4.printMat();
 
+    try m4.swapCol(0, 1);
+    std.debug.print("Matrix 4, coloumns 0 and 1 swapped: \n", .{});
+    try m4.printMat();
+
     var m5 = try Mat.initZero(alloc, 3, 3);
     defer m5.deinit();
     try m5.setRow(0, [_]f64{ 2.0, -1.0, 0.0 });

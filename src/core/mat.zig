@@ -137,6 +137,20 @@ pub fn Matrix(comptime T: type) type {
                     if (new_values.len != self.cols) return MatError.SizeMismatch;
                     @memcpy(dst, new_values);
                 },
+                .@"struct" => |s| { // This is dumb. TODO: make this not shit
+                    const l = s.fields.len;
+                    if (l == 3) { // ? We are basically guessing. We dont check the fields.
+                        // If a struct gets passed that happens to have fields of len 3 we crash when it
+                        // hasnt implemented .at()! BAD!
+                        if (new_values.len() != self.cols) return MatError.SizeMismatch;
+                        for (0..self.cols) |c| {
+                            //std.debug.print("Swapping {} for {} \n.", .{ self.atUnsafe(r, col), new_values.atUnsafe(r) });
+                            try self.set(row, c, try new_values.at(c));
+                        }
+                    } else {
+                        @compileError("MAT| setCol: type gotten was a struct that does not adhere to vec.Vector(T) \n");
+                    }
+                },
                 else => {
                     if (T_new != T) {
                         @compileError("MAT| setRow: types do not match, got: " ++ @typeName(T_new) ++ ". Expected: " ++ @typeName(T) ++ "\n");
@@ -177,7 +191,7 @@ pub fn Matrix(comptime T: type) type {
         /// Returns a MatError on failure.
         ///
         /// 'cons' must be of same type as underlying data.
-        pub fn setCol(self: Self, col: usize, new_values: anytype) MatError!void {
+        pub fn setCol(self: Self, col: usize, new_values: anytype) !void {
             const T_new = @TypeOf(new_values);
 
             switch (@typeInfo(T_new)) {
@@ -196,9 +210,23 @@ pub fn Matrix(comptime T: type) type {
                         try self.set(r, col, new_values[r]);
                     }
                 },
+                .@"struct" => |s| { // This is dumb. TODO: make this not shit
+                    const l = s.fields.len;
+                    if (l == 3) { // ? We are basically guessing. We dont check the fields.
+                        // If a struct gets passed that happens to have fields of len 3 we crash when it
+                        // hasnt implemented .at()! BAD!
+                        if (new_values.len() != self.rows) return MatError.SizeMismatch;
+                        for (0..self.rows) |r| {
+                            //std.debug.print("Swapping {} for {} \n.", .{ self.atUnsafe(r, col), new_values.atUnsafe(r) });
+                            try self.set(r, col, try new_values.at(r));
+                        }
+                    } else {
+                        @compileError("MAT| setCol: type gotten was a struct that does not adhere to vec.Vector(T) \n");
+                    }
+                },
                 else => {
                     if (T_new != T) {
-                        @compileError("MAT| setCol: type gotten does not match matrix type, got: " ++ @typeName(T_new) ++ ". Expected: " ++ @typeName(T) ++ "\n");
+                        @compileError("MAT| setCol: type gotten does not match matrix type, got: " ++ @typeName(T_new) ++ ". Expected: " ++ @typeName(T) ++ ".\n");
                     } else {
                         for (0..self.rows) |r| {
                             try self.set(r, col, new_values);
@@ -329,6 +357,22 @@ pub fn Matrix(comptime T: type) type {
             for (r1, r2) |*a, *b| {
                 std.mem.swap(T, a, b);
             }
+        }
+
+        // TODO: Improve this shit.
+        /// Swaps two coloumns.
+        ///
+        /// Does boundary checks. Returns an MatError.IndexOutOfBounds or Allocator error on failure.
+        pub fn swapCol(self: Self, col1: usize, col2: usize) (MatError || std.mem.Allocator.Error)!void {
+            if (col1 >= self.cols or col2 >= self.cols) return MatError.IndexOutOfBounds;
+            var c1 = try self.getCol(col1, self.alloc);
+            var c2 = try self.getCol(col2, self.alloc);
+            defer {
+                c1.deinit();
+                c2.deinit();
+            }
+            try self.setCol(col1, c2);
+            try self.setCol(col2, c1);
         }
 
         /// Returns the Norm_1 (max absolute coloumn sum) of the matrix
@@ -1531,4 +1575,11 @@ test "expm: OOM at various allocation points does not leak" {
             try std.testing.expect(e == error.OutOfMemory or e == MatError.BadShape or e == MatError.SizeMismatch);
         }
     }
+}
+
+test "swapCol" {
+    const alloc = std.testing.allocator;
+    var M = try CMat.initIdentity(alloc, 3, 3);
+    defer M.deinit();
+    try M.swapCol(1, 2);
 }
