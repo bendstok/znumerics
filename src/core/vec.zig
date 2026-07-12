@@ -258,7 +258,7 @@ pub const Vec_32 = Vector(f32);
 pub const CVec_32 = Vector(std.math.Complex(f32));
 
 /// Comptime: Check whether V is a Vector(...).
-fn isVector(comptime V: type) bool {
+pub fn isVector(comptime V: type) bool {
     return @typeInfo(V) == .@"struct" and @hasDecl(V, "element") and V == Vector(V.element);
 }
 

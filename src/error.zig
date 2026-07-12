@@ -11,4 +11,5 @@ pub const Common = error{
     BadShape,
     SizeMismatch,
     Empty,
+    TypeMismatch,
 };

@@ -137,18 +137,20 @@ pub fn Matrix(comptime T: type) type {
                     if (new_values.len != self.cols) return MatError.SizeMismatch;
                     @memcpy(dst, new_values);
                 },
-                .@"struct" => |s| { // This is dumb. TODO: make this not shit
-                    const l = s.fields.len;
-                    if (l == 3) { // ? We are basically guessing. We dont check the fields.
-                        // If a struct gets passed that happens to have fields of len 3 we crash when it
-                        // hasnt implemented .at()! BAD!
+                .@"struct" => |s| {
+                    _ = s;
+
+                    // COMPTIME IS LOADBEARING HERE! DONT REMOVE. makes the compiler "prune"
+                    // the else branch, so it does NOT FIRE the compileError.
+                    if (comptime @hasDecl(@TypeOf(new_values), "at")) {
+                        if (vec.ElementOf(@TypeOf(new_values)) != ElementOf(@TypeOf(self))) return MatError.TypeMismatch;
                         if (new_values.len() != self.cols) return MatError.SizeMismatch;
                         for (0..self.cols) |c| {
                             //std.debug.print("Swapping {} for {} \n.", .{ self.atUnsafe(r, col), new_values.atUnsafe(r) });
                             try self.set(row, c, try new_values.at(c));
                         }
                     } else {
-                        @compileError("MAT| setCol: type gotten was a struct that does not adhere to vec.Vector(T) \n");
+                        @compileError("MAT| setCol: type gotten was a struct that does not adhere to vec.Vector(T) / implement .at()\n");
                     }
                 },
                 else => {
@@ -210,18 +212,21 @@ pub fn Matrix(comptime T: type) type {
                         try self.set(r, col, new_values[r]);
                     }
                 },
-                .@"struct" => |s| { // This is dumb. TODO: make this not shit
-                    const l = s.fields.len;
-                    if (l == 3) { // ? We are basically guessing. We dont check the fields.
-                        // If a struct gets passed that happens to have fields of len 3 we crash when it
-                        // hasnt implemented .at()! BAD!
+                .@"struct" => |s| {
+                    _ = s;
+                    // std.mem.eql(u8, s.decls[0].name, "element"
+
+                    // COMPTIME IS LOADBEARING HERE! DONT REMOVE. makes the compiler "prune"
+                    // the else branch, so it does NOT FIRE the compileError.
+                    if (comptime @hasDecl(@TypeOf(new_values), "at")) {
                         if (new_values.len() != self.rows) return MatError.SizeMismatch;
+                        if (vec.ElementOf(@TypeOf(new_values)) != ElementOf(@TypeOf(self))) return MatError.TypeMismatch;
                         for (0..self.rows) |r| {
                             //std.debug.print("Swapping {} for {} \n.", .{ self.atUnsafe(r, col), new_values.atUnsafe(r) });
                             try self.set(r, col, try new_values.at(r));
                         }
                     } else {
-                        @compileError("MAT| setCol: type gotten was a struct that does not adhere to vec.Vector(T) \n");
+                        @compileError("MAT| setCol: type gotten was a struct that does not adhere to vec.Vector(T) / implement .at() \n");
                     }
                 },
                 else => {
