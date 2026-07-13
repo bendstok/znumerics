@@ -39,6 +39,52 @@ pub fn Vector(comptime T: type) type {
             return .{ .alloc = alloc, .data = data, .colvec = colvec };
         }
 
+        pub fn initOnes(alloc: std.mem.Allocator, size: usize, colvec: bool) (VecError || std.mem.Allocator.Error)!Self {
+            if (size == 0) {
+                return VecError.Empty;
+            }
+            const data = try alloc.alloc(T, size);
+            errdefer alloc.free(data);
+
+            @memset(data, sclr.one(T));
+            return .{ .alloc = alloc, .data = data, .colvec = colvec };
+        }
+
+        pub fn initRandom(
+            alloc: std.mem.Allocator,
+            size: usize,
+            colvec: bool,
+            seed: u64,
+            min: T,
+            max: T,
+        ) (VecError || std.mem.Allocator.Error)!Self {
+            if (size == 0) return VecError.Empty;
+
+            const data = try alloc.alloc(T, size);
+            errdefer alloc.free(data);
+
+            var prng: std.Random.DefaultPrng = .init(seed);
+            const rand = prng.random();
+
+            for (data) |*v| {
+                v.* = switch (@typeInfo(T)) {
+                    .float => (min + (max - min) * rand.float(T)),
+                    .int => rand.intRangeAtMost(T, min, max),
+                    else => blk: {
+                        if (comptime sclr.isComplex(T)) {
+                            const F = sclr.Real(T); // Underlying type
+                            break :blk T.init(
+                                min.re + (max.re - min.re) * rand.float(F),
+                                min.im + (max.im - min.im) * rand.float(F),
+                            );
+                        }
+                        @compileError("initRandom: unsupported type " ++ @typeName(T));
+                    },
+                };
+            }
+            return .{ .alloc = alloc, .data = data, .colvec = colvec };
+        }
+
         pub fn deinit(self: *Self) void {
             self.alloc.free(self.data);
             self.* = undefined;
