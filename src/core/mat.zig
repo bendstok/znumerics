@@ -267,20 +267,41 @@ pub fn Matrix(comptime T: type) type {
         }
 
         /// Transposes the matrix in place.
-        ///
-        /// Only works if the matrix is square.
-        ///
-        /// Returns a MatError.BadShape on failure.
-        // TODO: Update this, we can now expand the matrix easily.
-        pub fn transposeInPlace(self: Self) MatError!void {
-            if (self.rows != self.cols) return MatError.BadShape;
+        /// (MatError || std.mem.Allocator.Error)
+        pub fn transposeInPlace(self: *Self) !void {
+            if (self.rows != self.cols) {
+                const old_rows = self.rows;
+                const old_cols = self.cols;
 
-            for (0..self.rows) |r| {
-                for (r + 1..self.cols) |c| {
-                    const s1 = try self.at(r, c);
-                    const s2 = try self.at(c, r);
-                    try self.set(r, c, s2);
-                    try self.set(c, r, s1);
+                // This is probably dumb.
+                var cMat = try self.clone();
+                defer cMat.deinit();
+
+                //std.debug.print("Matrix after expand: \n", .{});
+                const square = @max(old_rows, old_cols);
+                try self.expand(square, square, sclr.zero(T));
+                //try self.printMat();
+
+                //std.debug.print("Matrix after shrink: \n", .{});
+                try self.shrink(old_cols, old_rows);
+                //try self.printMat();
+
+                for (0..self.cols) |c| {
+                    for (0..self.rows) |r| {
+                        //std.debug.print("Matrix after swap c: {}, r: {} \n", .{ c, r });
+                        //const val = cMat.atUnsafe(c, r);
+                        self.setUnsafe(r, c, cMat.atUnsafe(c, r));
+                        //try self.printMat();
+                    }
+                }
+            } else {
+                for (0..self.rows) |r| {
+                    for (r + 1..self.cols) |c| {
+                        const s1 = try self.at(r, c);
+                        const s2 = try self.at(c, r);
+                        try self.set(r, c, s2);
+                        try self.set(c, r, s1);
+                    }
                 }
             }
         }
@@ -288,6 +309,8 @@ pub fn Matrix(comptime T: type) type {
         /// Expands a matrix to the specified rows and cols.
         ///
         /// Returns an MatError.Empty if the new rows and cols are 0.
+        ///
+        /// See .shrink() for shrinking the Matrix.
         ///
         /// To expand the matrix a new matrix is made, and takes the spot of the old one.
         /// This is to prevent complex situations in case of OOM error.
@@ -297,7 +320,7 @@ pub fn Matrix(comptime T: type) type {
             // Shrinking is not supported; expand() is a no-op in that case.
             // (No logging: the library must stay logging-free so it links
             // cleanly on freestanding/wasm targets.)
-            if (self.rows >= rows or self.cols >= cols) return;
+            if (self.rows > rows or self.cols > cols) return;
 
             const old_rows = self.rows;
             const old_cols = self.cols;
@@ -330,6 +353,34 @@ pub fn Matrix(comptime T: type) type {
                 }
             }
 
+            // Swap
+            self.deinit();
+            self.* = newMat;
+        }
+
+        /// Shrinks a matrix to the specified rows and cols.
+        ///
+        /// Returns an MatError.Empty if the new rows and cols are 0.
+        /// Returns an MatError.BadShape if the new size is larger than
+        /// the current one in any dimension (see .expand() for growing).
+        ///
+        /// To shrink the matrix a new matrix is made, and takes the spot of the old one.
+        /// Values that get shrinked are deleted with no warning.
+        /// This is to prevent complex situations in case of OOM error.
+        pub fn shrink(self: *Self, rows: usize, cols: usize) (MatError || std.mem.Allocator.Error)!void {
+            if (rows == 0 or cols == 0) return MatError.Empty;
+            if (rows > self.rows or cols > self.cols) return MatError.BadShape;
+
+            // Build new matrix
+            var newMat = try Matrix(T).initZero(self.alloc, rows, cols);
+            errdefer newMat.deinit();
+
+            // Copy old contents
+            for (0..rows) |r| {
+                for (0..cols) |c| {
+                    newMat.setUnsafe(r, c, self.atUnsafe(r, c));
+                }
+            }
             // Swap
             self.deinit();
             self.* = newMat;
@@ -371,11 +422,10 @@ pub fn Matrix(comptime T: type) type {
         pub fn swapCol(self: Self, col1: usize, col2: usize) (MatError || std.mem.Allocator.Error)!void {
             if (col1 >= self.cols or col2 >= self.cols) return MatError.IndexOutOfBounds;
             var c1 = try self.getCol(col1, self.alloc);
+            defer c1.deinit();
             var c2 = try self.getCol(col2, self.alloc);
-            defer {
-                c1.deinit();
-                c2.deinit();
-            }
+            defer c2.deinit();
+
             try self.setCol(col1, c2);
             try self.setCol(col2, c1);
         }
@@ -548,7 +598,7 @@ pub fn ElementOf(comptime M: type) type {
 }
 
 /// Comptime: Check whether two matrices have the same element type.
-fn sameElement(comptime M1: type, comptime M2: type) bool {
+pub fn sameElement(comptime M1: type, comptime M2: type) bool {
     return ElementOf(M1) == ElementOf(M2);
 }
 
@@ -576,15 +626,11 @@ pub fn copyMat(from: anytype, to: @TypeOf(from)) MatError!void {
 pub fn transpose(self: anytype, alloc: std.mem.Allocator) (MatError || std.mem.Allocator.Error)!@TypeOf(self) {
     const M = @TypeOf(self);
     _ = ElementOf(M); // assert its a Matrix(T)
-
-    var retMat = try M.initZero(alloc, self.cols, self.rows);
+    var retMat = try M.initZero(alloc, self.rows, self.cols);
     errdefer retMat.deinit();
+    try copyMat(self, retMat);
 
-    for (0..self.rows) |r| {
-        for (0..self.cols) |c| {
-            try retMat.set(c, r, try self.at(r, c));
-        }
-    }
+    try retMat.transposeInPlace();
     return retMat;
 }
 
@@ -1584,7 +1630,96 @@ test "expm: OOM at various allocation points does not leak" {
 
 test "swapCol" {
     const alloc = std.testing.allocator;
-    var M = try CMat.initIdentity(alloc, 3, 3);
+    var M = try Matrix(f64).initIdentity(alloc, 3, 3);
     defer M.deinit();
+    try M.setRow(0, [_]f64{ 1.0, 2.0, 3.0 });
+    try M.setRow(1, [_]f64{ 4.0, 5.0, 6.0 });
+    try M.setRow(2, [_]f64{ 7.0, 8.0, 9.0 });
     try M.swapCol(1, 2);
+    try std.testing.expect(M.atUnsafe(0, 0) == 1.0);
+    try std.testing.expect(M.atUnsafe(0, 1) == 3.0);
+    try std.testing.expect(M.atUnsafe(0, 2) == 2.0);
+    try std.testing.expect(M.atUnsafe(1, 1) == 6.0);
+    try std.testing.expect(M.atUnsafe(1, 2) == 5.0);
+    try std.testing.expect(M.atUnsafe(2, 1) == 9.0);
+    try std.testing.expect(M.atUnsafe(2, 2) == 8.0);
+    // Swapping a column with itself is a no-op
+    try M.swapCol(0, 0);
+    try std.testing.expect(M.atUnsafe(0, 0) == 1.0);
+    try std.testing.expectError(MatError.IndexOutOfBounds, M.swapCol(0, 3));
+}
+
+test "shrink: keeps top-left corner, errors on bad sizes" {
+    const alloc = std.testing.allocator;
+    var M = try Matrix(f64).initZero(alloc, 3, 3);
+    defer M.deinit();
+    try M.setRow(0, [_]f64{ 1.0, 2.0, 3.0 });
+    try M.setRow(1, [_]f64{ 4.0, 5.0, 6.0 });
+    try M.setRow(2, [_]f64{ 7.0, 8.0, 9.0 });
+
+    // 3x3 -> 2x2 keeps the top-left corner
+    try M.shrink(2, 2);
+    try std.testing.expect(M.rows == 2 and M.cols == 2);
+    try std.testing.expect(M.atUnsafe(0, 0) == 1.0);
+    try std.testing.expect(M.atUnsafe(0, 1) == 2.0);
+    try std.testing.expect(M.atUnsafe(1, 0) == 4.0);
+    try std.testing.expect(M.atUnsafe(1, 1) == 5.0);
+
+    // Same size is allowed (no-op copy)
+    try M.shrink(2, 2);
+    try std.testing.expect(M.rows == 2 and M.cols == 2);
+    try std.testing.expect(M.atUnsafe(1, 1) == 5.0);
+
+    // Rectangular shrink
+    try M.shrink(1, 2);
+    try std.testing.expect(M.rows == 1 and M.cols == 2);
+    try std.testing.expect(M.atUnsafe(0, 0) == 1.0);
+    try std.testing.expect(M.atUnsafe(0, 1) == 2.0);
+
+    // Errors: zero size, and growing is expand()'s job
+    try std.testing.expectError(MatError.Empty, M.shrink(0, 2));
+    try std.testing.expectError(MatError.Empty, M.shrink(1, 0));
+    try std.testing.expectError(MatError.BadShape, M.shrink(2, 2));
+    try std.testing.expectError(MatError.BadShape, M.shrink(1, 3));
+}
+
+test "transposeInPlace: wide matrix (regression for shrink bounds)" {
+    const alloc = std.testing.allocator;
+    var M = try Matrix(f64).initZero(alloc, 2, 3);
+    defer M.deinit();
+    try M.setRow(0, [_]f64{ 1.0, 2.0, 3.0 });
+    try M.setRow(1, [_]f64{ 4.0, 5.0, 6.0 });
+
+    try M.transposeInPlace();
+    try std.testing.expect(M.rows == 3 and M.cols == 2);
+    try std.testing.expect(M.atUnsafe(0, 0) == 1.0);
+    try std.testing.expect(M.atUnsafe(0, 1) == 4.0);
+    try std.testing.expect(M.atUnsafe(1, 0) == 2.0);
+    try std.testing.expect(M.atUnsafe(1, 1) == 5.0);
+    try std.testing.expect(M.atUnsafe(2, 0) == 3.0);
+    try std.testing.expect(M.atUnsafe(2, 1) == 6.0);
+}
+
+test "shrink: OOM does not leak or corrupt the matrix" {
+    for (0..10) |fail_index| {
+        var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const alloc = fa.allocator();
+
+        var M = Matrix(f64).initZero(alloc, 3, 3) catch |e| {
+            try std.testing.expect(e == error.OutOfMemory);
+            continue;
+        };
+        defer M.deinit();
+        try M.setRow(0, [_]f64{ 1.0, 2.0, 3.0 });
+
+        if (M.shrink(2, 2)) {
+            try std.testing.expect(M.rows == 2 and M.cols == 2);
+            try std.testing.expect(M.atUnsafe(0, 0) == 1.0);
+        } else |e| {
+            try std.testing.expect(e == error.OutOfMemory);
+            // A failed shrink must leave the matrix untouched
+            try std.testing.expect(M.rows == 3 and M.cols == 3);
+            try std.testing.expect(M.atUnsafe(0, 0) == 1.0);
+        }
+    }
 }

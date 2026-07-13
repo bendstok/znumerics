@@ -50,6 +50,15 @@ pub fn main() !void {
     std.debug.print("Matrix 4: \n", .{});
     try m4.printMat();
 
+    try m4.shrink(3, 2);
+    std.debug.print("Matrix 4 Shrinked: \n", .{});
+    try m4.printMat();
+
+    // Transpose of non-square matrix.
+    try m4.transposeInPlace();
+    std.debug.print("Transpose of Matrix 4: \n", .{});
+    try m4.printMat();
+
     m4.multAll(2.0);
     std.debug.print("2 * Matrix 4: \n", .{});
     try m4.printMat();
