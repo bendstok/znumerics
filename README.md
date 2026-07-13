@@ -65,6 +65,12 @@ defer Ainv.deinit();
 var eA = try znum.mat.expm(alloc, A); // matrix exponential
 defer eA.deinit();
 
+// Random matrix: (alloc, rows, cols, seed, min, max). Same seed, same
+// matrix. Floats are drawn from [min, max), ints from [min, max] inclusive.
+// For complex, re and im are drawn independently within their own bounds.
+var R = try Mat.initRandom(alloc, 3, 3, 42, -1.0, 1.0);
+defer R.deinit();
+
 // also: initIdentity, transpose, determinant, trace, charPoly, norm1,
 // expand, swapRow, getRow/getCol/setCol, isUpperTriangular/isLowerTriangular
 ```

@@ -112,4 +112,19 @@ pub fn main() !void {
     const det_m6 = try znum.mat.determinant(alloc, m6);
     const im_sign: u8 = if (det_m6.im < 0) '-' else '+';
     std.debug.print("Matrix 6 determinant: {d:.3}{c}{d:.3}i \n", .{ det_m6.re, im_sign, @abs(det_m6.im) });
+
+    // Random matrices: initRandom(alloc, rows, cols, seed, min, max).
+    // Same seed always gives the same matrix.
+    // Floats are drawn from [min, max), integers from [min, max] inclusive.
+    var m7 = try Mat.initRandom(alloc, 3, 3, 42, -1.0, 1.0);
+    defer m7.deinit();
+    std.debug.print("Matrix 7 initRandom, f64 in [-1, 1): \n", .{});
+    try m7.printMat();
+
+    // Works for complex too: re and im are drawn independently,
+    // each within its own [min, max) bounds.
+    var m8 = try CMat.initRandom(alloc, 2, 2, 42, Cx.init(-1.0, 0.0), Cx.init(1.0, 10.0));
+    defer m8.deinit();
+    std.debug.print("Matrix 8 initRandom (complex), re in [-1, 1), im in [0, 10): \n", .{});
+    try m8.printMat();
 }

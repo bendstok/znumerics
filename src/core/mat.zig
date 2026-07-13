@@ -61,6 +61,43 @@ pub fn Matrix(comptime T: type) type {
             return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = data };
         }
 
+        /// Uses std.Random.DefaultPRNG under the hood.
+        pub fn initRandom(
+            alloc: std.mem.Allocator,
+            rows: usize,
+            cols: usize,
+            seed: u64,
+            min: T,
+            max: T,
+        ) (MatError || std.mem.Allocator.Error)!Self {
+            if (rows == 0 or cols == 0) return MatError.Empty;
+            const data = try alloc.alloc(T, rows * cols);
+            errdefer alloc.free(data);
+
+            // Random
+            var prng: std.Random.DefaultPrng = .init(seed);
+            const rand = prng.random();
+
+            for (data) |*v| {
+                v.* = switch (@typeInfo(T)) {
+                    .float => (min + (max - min) * rand.float(T)),
+                    .int => rand.intRangeAtMost(T, min, max),
+                    else => blk: {
+                        if (comptime sclr.isComplex(T)) {
+                            const F = sclr.Real(T); // Underlying type
+                            break :blk T.init(
+                                min.re + (max.re - min.re) * rand.float(F),
+                                min.im + (max.im - min.im) * rand.float(F),
+                            );
+                        }
+                        @compileError("initRandom: unsupported type " ++ @typeName(T));
+                    },
+                };
+            }
+
+            return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = data };
+        }
+
         pub fn deinit(self: *Self) void {
             self.alloc.free(self.data);
             self.* = undefined;
@@ -1185,6 +1222,53 @@ test "Matrix(Complex): smoke test of generic paths" {
     try std.testing.expect(c1.colvec);
     try std.testing.expect(sclr.approxEq(c1.atUnsafe(0), Cx.init(0, 0), 1e-12));
     try std.testing.expect(sclr.approxEq(c1.atUnsafe(1), Cx.init(2, 0), 1e-12));
+}
+
+test "Matrix: initRandom float, int, complex" {
+    const alloc = std.testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    // Float: values in [min, max), reproducible for equal seeds
+    var F1 = try Mat.initRandom(alloc, 4, 5, 42, -2.5, 3.5);
+    defer F1.deinit();
+    try std.testing.expectEqual(@as(usize, 4), F1.rows);
+    try std.testing.expectEqual(@as(usize, 5), F1.cols);
+    for (F1.data) |v| {
+        try std.testing.expect(v >= -2.5 and v < 3.5);
+    }
+
+    var F2 = try Mat.initRandom(alloc, 4, 5, 42, -2.5, 3.5);
+    defer F2.deinit();
+    try std.testing.expectEqualSlices(f64, F1.data, F2.data);
+
+    // Different seed should (with overwhelming probability) differ
+    var F3 = try Mat.initRandom(alloc, 4, 5, 43, -2.5, 3.5);
+    defer F3.deinit();
+    try std.testing.expect(!std.mem.eql(f64, F1.data, F3.data));
+
+    // Degenerate range: min == max pins every element
+    var F4 = try Mat.initRandom(alloc, 2, 2, 7, 1.25, 1.25);
+    defer F4.deinit();
+    for (F4.data) |v| try std.testing.expectEqual(@as(f64, 1.25), v);
+
+    // Int: inclusive [min, max], negative bounds allowed
+    var I1 = try Matrix(i32).initRandom(alloc, 8, 8, 123, -3, 3);
+    defer I1.deinit();
+    for (I1.data) |v| {
+        try std.testing.expect(v >= -3 and v <= 3);
+    }
+
+    // Complex: re and im each in their own [min, max) box
+    var C1 = try CMat.initRandom(alloc, 3, 3, 99, Cx.init(-1, 10), Cx.init(1, 20));
+    defer C1.deinit();
+    for (C1.data) |v| {
+        try std.testing.expect(v.re >= -1 and v.re < 1);
+        try std.testing.expect(v.im >= 10 and v.im < 20);
+    }
+
+    // Empty dimensions rejected
+    try std.testing.expectError(MatError.Empty, Mat.initRandom(alloc, 0, 3, 1, 0.0, 1.0));
+    try std.testing.expectError(MatError.Empty, Mat.initRandom(alloc, 3, 0, 1, 0.0, 1.0));
 }
 
 test "Matrix(f32): getRow / getCol" {
