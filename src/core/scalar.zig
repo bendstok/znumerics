@@ -99,6 +99,43 @@ pub fn absSq(x: anytype) Real(@TypeOf(x)) {
 
 // ---------- comparison ----------
 
+/// For Complex, takes the higher magnitude. Else uses @max()
+pub fn max(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
+    if (comptime isComplex(@TypeOf(a))) {
+        if (a.magnitude() >= b.magnitude()) return a else return b;
+    } else {
+        return @max(a, b);
+    }
+}
+
+/// Comparison: a >= b.
+///
+/// For complex types, compares the magnitude.
+pub fn geq(a: anytype, b: @TypeOf(a)) bool {
+    return if (comptime isComplex(@TypeOf(a))) a.magnitude() >= b.magnitude() else a >= b;
+}
+
+/// Comparison: a <= b.
+///
+/// For complex types, compares the magnitude.
+pub fn leq(a: anytype, b: @TypeOf(a)) bool {
+    return if (comptime isComplex(@TypeOf(a))) a.magnitude() <= b.magnitude() else a <= b;
+}
+
+/// Comparison: a > b.
+///
+/// For complex types, compares the magnitude.
+pub fn greaterThan(a: anytype, b: @TypeOf(a)) bool {
+    return if (comptime isComplex(@TypeOf(a))) a.magnitude() > b.magnitude() else a > b;
+}
+
+/// Comparison: a < b.
+///
+/// For complex types, compares the magnitude.
+pub fn lessThan(a: anytype, b: @TypeOf(a)) bool {
+    return if (comptime isComplex(@TypeOf(a))) a.magnitude() < b.magnitude() else a < b;
+}
+
 /// Exact equality (== on floats; both components on Complex).
 pub fn eql(a: anytype, b: @TypeOf(a)) bool {
     return if (comptime isComplex(@TypeOf(a))) a.re == b.re and a.im == b.im else a == b;

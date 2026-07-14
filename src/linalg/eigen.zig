@@ -78,12 +78,25 @@ pub fn arnoldi_iteration(A: anytype, init_vec: vec.Vector(mat.ElementOf(@TypeOf(
     return .{ .Q = Q, .h = h };
 }
 
-const Givens = struct { c: f64, s: f64 };
+fn Givens(comptime T: type) type {
+    return struct { c: sclr.Real(T), s: T };
+}
 
-fn givens(a: f64, b: f64) Givens {
-    if (b == 0) return .{ .c = 1, .s = 0 };
-    const r = @sqrt(a * a + b * b);
-    return .{ .c = a / r, .s = -b / r };
+/// G = [[c, -conj(s)], [s, c]] with c real, chosen so (G·[a; b])[1] == 0.
+fn givens(a: anytype, b: @TypeOf(a)) Givens(@TypeOf(a)) {
+    const T = @TypeOf(a);
+    const abs_a = sclr.abs(a);
+    const abs_b = sclr.abs(b);
+    if (abs_b == 0) return .{ .c = 1, .s = sclr.zero(T) };
+    if (abs_a == 0) return .{ .c = 0, .s = sclr.neg(sclr.one(T)) }; // pure swap
+    const r = @sqrt(abs_a * abs_a + abs_b * abs_b);
+    // c = |a|/r (always real, >= 0); s = -(conj(a)/|a|) * b/r.
+    // For real a this is the old c = a/r, s = -b/r up to an overall sign.
+    const phase = sclr.div(sclr.conj(a), sclr.fromReal(T, abs_a));
+    return .{
+        .c = abs_a / r,
+        .s = sclr.neg(sclr.mul(phase, sclr.div(b, sclr.fromReal(T, r)))),
+    };
 }
 
 /// Balances A in place with a diagonal similarity transform (Parlett-Reinsch),
@@ -96,23 +109,24 @@ fn givens(a: f64, b: f64) Givens {
 /// Badly scaled matrices (hand-edited state matrices, companion matrices of
 /// polynomials with widely varying coefficients) are exactly where the QR
 /// iteration loses accuracy; balancing restores it at negligible cost.
-fn balance(A: Mat) void {
+fn balance(A: anytype) void {
+    const T = mat.ElementOf(@TypeOf(A));
     const n = A.rows;
     const radix: f64 = 2.0;
     var done = false;
     while (!done) {
         done = true;
         for (0..n) |i| {
-            var c: f64 = 0.0;
-            var r: f64 = 0.0;
+            var c: sclr.Real(T) = 0.0;
+            var r: sclr.Real(T) = 0.0;
             for (0..n) |j| {
                 if (j == i) continue;
-                c += @abs(A.atUnsafe(j, i));
-                r += @abs(A.atUnsafe(i, j));
+                c += sclr.abs(A.atUnsafe(j, i));
+                r += sclr.abs(A.atUnsafe(i, j));
             }
             if (c == 0.0 or r == 0.0) continue;
             const s = c + r;
-            var f: f64 = 1.0;
+            var f: sclr.Real(T) = 1.0;
             while (c < r / radix) {
                 c *= radix * radix;
                 f *= radix;
@@ -123,9 +137,9 @@ fn balance(A: Mat) void {
             }
             if ((c + r) / f < 0.95 * s) {
                 done = false;
-                const g = 1.0 / f;
-                for (0..n) |j| A.setUnsafe(i, j, A.atUnsafe(i, j) * g); // row i /= f
-                for (0..n) |j| A.setUnsafe(j, i, A.atUnsafe(j, i) * f); // col i *= f
+                const g: T = sclr.div(sclr.one(T), sclr.fromReal(T, f));
+                for (0..n) |j| A.setUnsafe(i, j, sclr.mul(A.atUnsafe(i, j), g)); // row i /= f
+                for (0..n) |j| A.setUnsafe(j, i, sclr.mul(A.atUnsafe(j, i), sclr.fromReal(T, f))); // col i *= f
             }
         }
     }
@@ -135,71 +149,83 @@ fn balance(A: Mat) void {
 /// transforms. Deterministic: no start vector and no breakdown (unlike the
 /// Arnoldi reduction). For a symmetric A the result is tridiagonal.
 /// Eigenvalues are preserved (A := HₖAHₖ).
-fn hessenbergReduce(alloc: std.mem.Allocator, A: Mat) std.mem.Allocator.Error!void {
+fn hessenbergReduce(alloc: std.mem.Allocator, A: anytype) std.mem.Allocator.Error!void {
+    const T = mat.ElementOf(@TypeOf(A));
     const n = A.rows;
     if (n <= 2) return;
-    const v = try alloc.alloc(f64, n);
+    const v = try alloc.alloc(T, n);
     defer alloc.free(v);
     for (0..n - 2) |k| {
-        var nrm: f64 = 0;
-        for (k + 1..n) |i| nrm += A.atUnsafe(i, k) * A.atUnsafe(i, k);
-        nrm = @sqrt(nrm);
-        if (nrm == 0) continue;
+        var nrm: T = sclr.zero(T);
+        for (k + 1..n) |i| nrm = sclr.add(nrm, sclr.mul(A.atUnsafe(i, k), A.atUnsafe(i, k)));
+        nrm = sclr.sqrt(nrm);
+        if (sclr.eql(nrm, sclr.zero(T))) continue;
         const x0 = A.atUnsafe(k + 1, k);
-        const alpha: f64 = if (x0 >= 0) -nrm else nrm; // stable sign
-        v[k + 1] = x0 - alpha;
+        const alpha: T = if (sclr.geq(x0, sclr.zero(T))) sclr.neg(nrm) else nrm; // stable sign
+        v[k + 1] = sclr.sub(x0, alpha);
         for (k + 2..n) |i| v[i] = A.atUnsafe(i, k);
-        var vv: f64 = 0;
-        for (k + 1..n) |i| vv += v[i] * v[i];
-        if (vv == 0) continue;
-        const beta = 2.0 / vv;
+        var vv: T = sclr.zero(T);
+        for (k + 1..n) |i| vv = sclr.add(vv, sclr.mul(v[i], v[i]));
+        if (sclr.eql(vv, sclr.zero(T))) continue;
+        const beta = sclr.div(sclr.fromReal(T, 2), vv);
         // Left:  A := (I - beta v vᵀ) A
         for (0..n) |j| {
-            var dt: f64 = 0;
-            for (k + 1..n) |i| dt += v[i] * A.atUnsafe(i, j);
-            const w = beta * dt;
-            for (k + 1..n) |i| A.setUnsafe(i, j, A.atUnsafe(i, j) - v[i] * w);
+            var dt: T = sclr.zero(T);
+            for (k + 1..n) |i| dt = sclr.add(dt, sclr.mul(v[i], A.atUnsafe(i, j)));
+            const w = sclr.mul(beta, dt);
+            for (k + 1..n) |i| A.setUnsafe(i, j, sclr.sub(A.atUnsafe(i, j), sclr.mul(v[i], w)));
         }
         // Right: A := A (I - beta v vᵀ)
         for (0..n) |i| {
-            var dt: f64 = 0;
-            for (k + 1..n) |j| dt += A.atUnsafe(i, j) * v[j];
-            const w = beta * dt;
-            for (k + 1..n) |j| A.setUnsafe(i, j, A.atUnsafe(i, j) - w * v[j]);
+            var dt: T = sclr.zero(T);
+            for (k + 1..n) |j| dt = sclr.add(dt, sclr.mul(A.atUnsafe(i, j), v[j]));
+            const w = sclr.mul(beta, dt);
+            for (k + 1..n) |j| A.setUnsafe(i, j, sclr.sub(A.atUnsafe(i, j), sclr.mul(w, v[j])));
         }
     }
 }
 
-fn eig2x2(a: f64, b: f64, c: f64, d: f64) [2]Complex {
-    const tr = a + d;
-    const det = a * d - b * c;
-    const disc = tr * tr / 4.0 - det;
-    if (disc >= 0) { // We have two real eigenvalues
-        const sq = @sqrt(disc);
-        return .{ Complex.init(tr / 2.0 + sq, 0), Complex.init(tr / 2.0 - sq, 0) };
-    } else { // We have to imaginary eigenvalues
-        const im = @sqrt(-disc);
-        return .{ Complex.init(tr / 2.0, im), Complex.init(tr / 2.0, -im) };
-    }
+/// Promote a scalar to Complex(Real(T)); identity if T is already complex.
+fn promote(x: anytype) std.math.Complex(sclr.Real(@TypeOf(x))) {
+    return if (comptime sclr.isComplex(@TypeOf(x))) x else .init(x, 0);
 }
 
-// left-apply to rows i and i+1, across the active block's columns [0, m)
-fn rotRows(H: Mat, i: usize, g: Givens, m: usize) void {
+/// Eigenvalues of [[a, b], [c, d]]: tr/2 ± sqrt((tr/2)² - det).
+fn eig2x2(a: anytype, b: @TypeOf(a), c: @TypeOf(a), d: @TypeOf(a)) [2]std.math.Complex(sclr.Real(@TypeOf(a))) {
+    const Cx = std.math.Complex(sclr.Real(@TypeOf(a)));
+
+    const ac = promote(a);
+    const bc = promote(b);
+    const cc = promote(c);
+    const dc = promote(d);
+
+    const half_tr = ac.add(dc).mul(Cx.init(0.5, 0));
+    const det = ac.mul(dc).sub(bc.mul(cc));
+    // Complex sqrt handles disc < 0 for free: no sign branch needed.
+    const disc = sclr.sqrt(half_tr.mul(half_tr).sub(det));
+
+    return .{ half_tr.add(disc), half_tr.sub(disc) };
+}
+
+fn rotRows(H: anytype, i: usize, g: Givens(mat.ElementOf(@TypeOf(H))), m: usize) void {
+    const T = mat.ElementOf(@TypeOf(H));
+    const cT = sclr.fromReal(T, g.c);
     for (0..m) |j| {
         const p = H.atUnsafe(i, j);
         const q = H.atUnsafe(i + 1, j);
-        H.setUnsafe(i, j, g.c * p - g.s * q);
-        H.setUnsafe(i + 1, j, g.s * p + g.c * q);
+        H.setUnsafe(i, j, sclr.sub(sclr.mul(cT, p), sclr.mul(sclr.conj(g.s), q)));
+        H.setUnsafe(i + 1, j, sclr.add(sclr.mul(g.s, p), sclr.mul(cT, q)));
     }
 }
 
-// right-apply (Gᵀ) to columns i and i+1, down the active block's rows [0, m)
-fn rotCols(H: Mat, i: usize, g: Givens, m: usize) void {
+fn rotCols(H: anytype, i: usize, g: Givens(mat.ElementOf(@TypeOf(H))), m: usize) void {
+    const T = mat.ElementOf(@TypeOf(H));
+    const cT = sclr.fromReal(T, g.c);
     for (0..m) |r| {
         const p = H.atUnsafe(r, i);
         const q = H.atUnsafe(r, i + 1);
-        H.setUnsafe(r, i, g.c * p - g.s * q);
-        H.setUnsafe(r, i + 1, g.s * p + g.c * q);
+        H.setUnsafe(r, i, sclr.sub(sclr.mul(cT, p), sclr.mul(g.s, q)));
+        H.setUnsafe(r, i + 1, sclr.add(sclr.mul(sclr.conj(g.s), p), sclr.mul(cT, q)));
     }
 }
 
@@ -238,7 +264,7 @@ pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
     balance(Ak);
     try hessenbergReduce(alloc, Ak);
 
-    const rotation = try alloc.alloc(Givens, n);
+    const rotation = try alloc.alloc(Givens(mat.ElementOf(@TypeOf(A))), n);
     defer alloc.free(rotation);
 
     var iter: usize = 0;
@@ -288,26 +314,40 @@ pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
     return eigs;
 }
 
-/// Returns the eigenvalues of A as a slice (the diagonal after reduction).
-/// Caller owns the returned slice. If 'iters' is non-null, the QR sweep count
-/// is written to it.
+pub fn complexEigenvectors(alloc: std.mem.Allocator, A: anytype) !void {
+    const T = mat.ElementOf(A);
+    _ = T;
+    _ = alloc;
+    //const eigens = try qrAlgorithmComplex(alloc, A, 1000, 1e-6, null);
+}
+
+/// Returns the eigenvalues of A as a slice of Complex(Real(T)), where T is
+/// the element type of A (possibly itself complex). Caller owns the returned
+/// slice. If 'iters' is non-null, the QR sweep count is written to it.
 ///
 /// Balances A (Parlett-Reinsch) and reduces it to upper Hessenberg form once
 /// (Householder similarity), then runs the QR algorithm with Wilkinson shift
 /// and deflation, applying each shifted sweep as in-place Givens rotations.
-/// For a symmetric A the reduction yields a tridiagonal matrix.
+/// For a symmetric/Hermitian A the reduction yields a tridiagonal matrix.
 ///
-/// Accepts any real square matrix, including matrices with complex-conjugate
-/// eigenvalue pairs. The iteration stays in real arithmetic (real Schur form):
-/// a converged 2x2 block is deflated as a unit and its eigenvalue pair is
-/// extracted analytically. An exceptional ad-hoc shift is applied every 10
-/// stalled sweeps, since the true shift of a complex block is complex.
+/// Accepts any square matrix, real or complex element type:
+///
+/// - Real T (f32, f64): the iteration stays in real arithmetic (real Schur
+///   form), including matrices with complex-conjugate eigenvalue pairs. A
+///   converged 2x2 block is deflated as a unit and its eigenvalue pair is
+///   extracted analytically. An exceptional ad-hoc shift is applied every 10
+///   stalled sweeps, since the true shift of a complex block is complex.
+/// - Complex T: the iteration runs in complex arithmetic (Schur form is
+///   triangular), so every eigenvalue deflates as a 1x1 block. The complex
+///   Wilkinson shift is used directly and no 2x2/exceptional-shift handling
+///   is needed. Eigenvalues do NOT come in conjugate pairs here.
 ///
 /// Stops once every block has deflated, or after 'max_iter' sweeps
 /// (best effort: the remaining diagonal/blocks are extracted either way).
 ///
 /// Returns an EigenError.NotSquare if A is not square.
-pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]Complex {
+pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: anytype, max_iter: usize, tolerance: sclr.Real(mat.ElementOf(@TypeOf(A))), iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]std.math.Complex(sclr.Real(mat.ElementOf(@TypeOf(A)))) {
+    const T = mat.ElementOf(@TypeOf(A));
     if (A.rows != A.cols) return EigenError.NotSquare;
     const n = A.rows;
 
@@ -322,10 +362,14 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
     balance(Ak);
     try hessenbergReduce(alloc, Ak);
 
-    const rotation = try alloc.alloc(Givens, n);
+    const rotation = try alloc.alloc(Givens(T), n);
     defer alloc.free(rotation);
 
-    const eigs = try alloc.alloc(Complex, n);
+    const eigs = switch (@typeInfo(mat.ElementOf(@TypeOf(A)))) {
+        .float => try alloc.alloc(Complex, n), // assumption complex, TODO: make better
+        else => try alloc.alloc(T, n),
+    };
+    //const eigs = try alloc.alloc(Complex, n);
     errdefer alloc.free(eigs);
 
     var iter: usize = 0;
@@ -334,25 +378,44 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
 
     while (m > 0 and iter < max_iter) : (iter += 1) {
         if (m == 1) { // Last 1x1 block
-            eigs[0] = Complex.init(Ak.atUnsafe(0, 0), 0);
-            m = 0;
-            break;
+            switch (@typeInfo(mat.ElementOf(@TypeOf(A)))) { // Better way to do this since eigs is either type
+                .float => {
+                    eigs[0] = Complex.init(Ak.atUnsafe(0, 0), 0);
+                    m = 0;
+                    break;
+                },
+                else => { // Assume Complex, TODO: make better
+                    eigs[0] = Ak.atUnsafe(0, 0);
+                    m = 0;
+                    break;
+                },
+            }
         }
 
         // Deflation: is the bottom subdiagonal of the active block negligible?
-        const sub = @abs(Ak.atUnsafe(m - 1, m - 2));
-        const scale = @abs(Ak.atUnsafe(m - 2, m - 2)) + @abs(Ak.atUnsafe(m - 1, m - 1));
-        if (sub <= tolerance * scale) { // lock in Ak[m-1,m-1] as a converged eigenvalue
-            eigs[m - 1] = Complex.init(Ak.atUnsafe(m - 1, m - 1), 0);
-            m -= 1;
-            stall = 0;
-            continue;
+        const sub = sclr.abs(Ak.atUnsafe(m - 1, m - 2));
+        const scale = sclr.add(sclr.abs(Ak.atUnsafe(m - 2, m - 2)), sclr.abs(Ak.atUnsafe(m - 1, m - 1)));
+        if (sclr.leq(sub, sclr.mul(tolerance, scale))) { // lock in Ak[m-1,m-1] as a converged eigenvalue
+            switch (@typeInfo(mat.ElementOf(@TypeOf(A)))) { // Better way to do this since eigs is either type
+                .float => {
+                    eigs[m - 1] = Complex.init(Ak.atUnsafe(m - 1, m - 1), 0);
+                    m -= 1;
+                    stall = 0;
+                    continue;
+                },
+                else => { // Assume Complex, TODO: make better
+                    eigs[m - 1] = Ak.atUnsafe(m - 1, m - 1);
+                    m -= 1;
+                    stall = 0;
+                    continue;
+                },
+            }
         }
 
         const block_done = if (m == 2) true else blk: {
-            const sub2 = @abs(Ak.atUnsafe(m - 2, m - 3));
-            const scale2 = @abs(Ak.atUnsafe(m - 3, m - 3)) + @abs(Ak.atUnsafe(m - 2, m - 2));
-            break :blk sub2 <= tolerance * scale2;
+            const sub2 = sclr.abs(Ak.atUnsafe(m - 2, m - 3));
+            const scale2 = sclr.add(sclr.abs(Ak.atUnsafe(m - 3, m - 3)), sclr.abs(Ak.atUnsafe(m - 2, m - 2)));
+            break :blk sclr.leq(sub2, sclr.mul(tolerance, scale2));
         };
         if (block_done) {
             const pair = eig2x2(Ak.atUnsafe(m - 2, m - 2), Ak.atUnsafe(m - 2, m - 1), Ak.atUnsafe(m - 1, m - 2), Ak.atUnsafe(m - 1, m - 1));
@@ -362,30 +425,45 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
             stall = 0;
             continue;
         }
-        var mu: f64 = undefined;
+        var mu: mat.ElementOf(@TypeOf(A)) = undefined;
         if (stall > 0 and stall % 10 == 0) {
             // Breaks cycles  the real Wilkinson shift can't,
             // since the shift is complex in nature
-            mu = @abs(Ak.atUnsafe(m - 1, m - 2)) +
-                (if (m > 2) @abs(Ak.atUnsafe(m - 2, m - 3)) else 0.0);
+            mu = sclr.fromReal(T, sclr.add(sclr.abs(Ak.atUnsafe(m - 1, m - 2)), (if (m > 2) sclr.abs(Ak.atUnsafe(m - 2, m - 3)) else 0.0)));
         } else {
             // Wilkinson shift from the trailing 2x2 of the active block.
-            const a = Ak.atUnsafe(m - 2, m - 2);
-            const b = Ak.atUnsafe(m - 2, m - 1);
-            const c = Ak.atUnsafe(m - 1, m - 2);
-            const d = Ak.atUnsafe(m - 1, m - 1);
-            const delta = (a - d) / 2.0;
-            const bc = b * c;
-            const denom = @abs(delta) + @sqrt(@max(delta * delta + bc, 0.0));
-            mu = d; // Fallback so mu is never left undefined
-            if (denom != 0) {
-                const sign: f64 = if (delta >= 0) 1.0 else -1.0;
-                mu = d - sign * bc / denom;
-            }
+            mu = blk: {
+                const a = Ak.atUnsafe(m - 2, m - 2);
+                const b = Ak.atUnsafe(m - 2, m - 1);
+                const c = Ak.atUnsafe(m - 1, m - 2);
+                const d = Ak.atUnsafe(m - 1, m - 1);
+                const bc = sclr.mul(b, c);
+
+                if (comptime sclr.isComplex(T)) {
+                    // Complex Wilkinson shift: eigenvalue of the trailing 2x2 closest
+                    // to d. Complex sqrt exists, so no clamp; the sign(delta) trick
+                    // becomes "pick the larger-magnitude denominator" (same
+                    // cancellation-avoidance, order-free).
+                    const delta = sclr.mul(sclr.sub(a, d), sclr.fromReal(T, 0.5));
+                    const disc = sclr.sqrt(sclr.add(sclr.mul(delta, delta), bc));
+                    const plus = sclr.add(delta, disc);
+                    const minus = sclr.sub(delta, disc);
+                    const denom = if (sclr.abs(plus) >= sclr.abs(minus)) plus else minus;
+                    if (sclr.abs(denom) == 0) break :blk d;
+                    break :blk sclr.sub(d, sclr.div(bc, denom));
+                } else {
+                    // Real T: keep the original formula, plain operators work here.
+                    const delta = (a - d) / 2.0;
+                    const denom = @abs(delta) + @sqrt(@max(delta * delta + bc, 0.0));
+                    if (denom == 0) break :blk d;
+                    const sign: T = if (delta >= 0) 1.0 else -1.0;
+                    break :blk d - sign * bc / denom;
+                }
+            };
         }
 
         // Shifted Givens QR step on the active mxm block.
-        for (0..m) |i| Ak.setUnsafe(i, i, Ak.atUnsafe(i, i) - mu); // shift
+        for (0..m) |i| Ak.setUnsafe(i, i, sclr.sub(Ak.atUnsafe(i, i), mu)); // shift
 
         for (0..m - 1) |i| { // forward sweep: zero each subdiagonal, store rotation
             rotation[i] = givens(Ak.atUnsafe(i, i), Ak.atUnsafe(i + 1, i));
@@ -395,7 +473,7 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
             rotCols(Ak, i, rotation[i], m);
         }
 
-        for (0..m) |i| Ak.setUnsafe(i, i, Ak.atUnsafe(i, i) + mu); // unshift
+        for (0..m) |i| Ak.setUnsafe(i, i, sclr.add(Ak.atUnsafe(i, i), mu)); // unshift
         stall += 1;
     }
 
@@ -406,12 +484,12 @@ pub fn qrAlgorithmComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tol
     var i: usize = m;
     while (i > 0) {
         if (i == 1) {
-            eigs[0] = Complex.init(Ak.atUnsafe(0, 0), 0);
+            eigs[0] = promote(Ak.atUnsafe(0, 0));
             i = 0;
-        } else if (@abs(Ak.atUnsafe(i - 1, i - 2)) <=
-            tolerance * (@abs(Ak.atUnsafe(i - 2, i - 2)) + @abs(Ak.atUnsafe(i - 1, i - 1))))
+        } else if (sclr.abs(Ak.atUnsafe(i - 1, i - 2)) <=
+            tolerance * (sclr.abs(Ak.atUnsafe(i - 2, i - 2)) + sclr.abs(Ak.atUnsafe(i - 1, i - 1))))
         {
-            eigs[i - 1] = Complex.init(Ak.atUnsafe(i - 1, i - 1), 0);
+            eigs[i - 1] = promote(Ak.atUnsafe(i - 1, i - 1));
             i -= 1;
         } else {
             const pair = eig2x2(Ak.atUnsafe(i - 2, i - 2), Ak.atUnsafe(i - 2, i - 1), Ak.atUnsafe(i - 1, i - 2), Ak.atUnsafe(i - 1, i - 1));
@@ -440,17 +518,20 @@ pub fn eigenvalues(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
     return qrAlgorithm(alloc, A, max_iter, tolerance, iters);
 }
 
-/// Returns the eigenvalues of an n×n real matrix A, including
-/// complex-conjugate pairs. Caller owns the returned slice. If 'iters' is
+/// Returns the eigenvalues of an n×n matrix A as Complex(Real(T)), where T
+/// is the element type of A (possibly itself complex). For real A this
+/// includes complex-conjugate pairs; for complex A the eigenvalues carry no
+/// conjugate-pair structure. Caller owns the returned slice. If 'iters' is
 /// non-null, the QR sweep count is written to it.
 ///
 /// Delegates to 'qrAlgorithmComplex': balancing, then a deterministic
 /// Householder Hessenberg reduction (no start vector, no breakdown), then
-/// shifted QR in real arithmetic (real Schur form) with 2x2 blocks
-/// extracted analytically.
+/// shifted QR — in real arithmetic (real Schur form, 2x2 blocks extracted
+/// analytically) for real T, in complex arithmetic (triangular Schur form,
+/// 1x1 deflation) for complex T.
 ///
 /// Returns an EigenError.NotSquare if A is not square.
-pub fn eigenvaluesComplex(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance: f64, iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]Complex {
+pub fn eigenvaluesComplex(alloc: std.mem.Allocator, A: anytype, max_iter: usize, tolerance: sclr.Real(mat.ElementOf(@TypeOf(A))), iters: ?*usize) (EigenError || std.mem.Allocator.Error)![]std.math.Complex(sclr.Real(mat.ElementOf(@TypeOf(A)))) {
     return qrAlgorithmComplex(alloc, A, max_iter, tolerance, iters);
 }
 
@@ -1101,6 +1182,132 @@ test "qrAlgorithmComplex: symmetric matrix regression, all imaginary parts zero"
         try testing.expectApproxEqAbs(expected[i], eigs[i].re, 1e-6);
         try testing.expectApproxEqAbs(0.0, eigs[i].im, 1e-9);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Complex-element input: Matrix(Complex(F)). These tests define the
+// generalized API (written ahead of the implementation):
+//
+//   qrAlgorithmComplex(alloc, A, max_iter, tolerance: sclr.Real(T), iters)
+//       -> []std.math.Complex(sclr.Real(T))
+//
+// where T = ElementOf(@TypeOf(A)) may itself be complex. In complex
+// arithmetic every eigenvalue deflates as a 1x1 block, so no eig2x2
+// 2x2-real-Schur handling is needed on this path.
+// ---------------------------------------------------------------------------
+
+/// Generic membership check, any float precision.
+fn expectEigContainsT(comptime F: type, eigs: []const std.math.Complex(F), re: F, im: F, tol_: F) !void {
+    for (eigs) |e| {
+        if (@abs(e.re - re) <= tol_ and @abs(e.im - im) <= tol_) return;
+    }
+    return error.ExpectedEigenvalueMissing;
+}
+
+test "qrAlgorithmComplex: CMat Hermitian [[2, i], [-i, 2]] -> real spectrum {1, 3}" {
+    const alloc = testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    var A = try mat.CMat.initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.setRow(0, [_]Cx{ Cx.init(2, 0), Cx.init(0, 1) });
+    try A.setRow(1, [_]Cx{ Cx.init(0, -1), Cx.init(2, 0) });
+
+    const eigs = try qrAlgorithmComplex(alloc, A, 1000, 1e-12, null);
+    defer alloc.free(eigs);
+
+    try testing.expectEqual(@as(usize, 2), eigs.len);
+    // Hermitian: spectrum is real. 2 ± 1 = {1, 3}.
+    try expectEigContains(eigs, 1.0, 0.0, 1e-8);
+    try expectEigContains(eigs, 3.0, 0.0, 1e-8);
+}
+
+test "qrAlgorithmComplex: CMat complex-symmetric [[0, i], [i, 0]] -> +-i" {
+    const alloc = testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    // Symmetric but NOT Hermitian: genuinely imaginary spectrum.
+    // trace = 0, det = -i*i = 1 => lambda^2 + 1 = 0 => lambda = +-i.
+    var A = try mat.CMat.initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.setRow(0, [_]Cx{ Cx.init(0, 0), Cx.init(0, 1) });
+    try A.setRow(1, [_]Cx{ Cx.init(0, 1), Cx.init(0, 0) });
+
+    const eigs = try qrAlgorithmComplex(alloc, A, 1000, 1e-12, null);
+    defer alloc.free(eigs);
+
+    try expectEigContains(eigs, 0.0, 1.0, 1e-8);
+    try expectEigContains(eigs, 0.0, -1.0, 1e-8);
+}
+
+test "qrAlgorithmComplex: CMat companion, roots i, 2i, 1+i" {
+    const alloc = testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    // p(x) = (x - i)(x - 2i)(x - (1+i))
+    //      = x^3 - (1+4i)x^2 + (-5+3i)x + (2+2i)
+    // Top-row companion form (same convention as the real-matrix tests):
+    // top row = [-a2, -a1, -a0] = [1+4i, 5-3i, -2-2i].
+    // Unlike a real companion, the complex conjugates are NOT in the
+    // spectrum, so this fails if the iteration secretly stays real.
+    var A = try mat.CMat.initZero(alloc, 3, 3);
+    defer A.deinit();
+    try A.setRow(0, [_]Cx{ Cx.init(1, 4), Cx.init(5, -3), Cx.init(-2, -2) });
+    try A.setRow(1, [_]Cx{ Cx.init(1, 0), Cx.init(0, 0), Cx.init(0, 0) });
+    try A.setRow(2, [_]Cx{ Cx.init(0, 0), Cx.init(1, 0), Cx.init(0, 0) });
+
+    const eigs = try qrAlgorithmComplex(alloc, A, 1000, 1e-12, null);
+    defer alloc.free(eigs);
+
+    try expectEigContains(eigs, 0.0, 1.0, 1e-8);
+    try expectEigContains(eigs, 0.0, 2.0, 1e-8);
+    try expectEigContains(eigs, 1.0, 1.0, 1e-8);
+}
+
+test "qrAlgorithmComplex: CMat upper triangular deflates to its diagonal" {
+    const alloc = testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    var A = try mat.CMat.initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.setRow(0, [_]Cx{ Cx.init(1, 1), Cx.init(5, 0) });
+    try A.setRow(1, [_]Cx{ Cx.init(0, 0), Cx.init(2, -3) });
+
+    var iters: usize = 0;
+    const eigs = try qrAlgorithmComplex(alloc, A, 1000, 1e-12, &iters);
+    defer alloc.free(eigs);
+
+    try expectEigContains(eigs, 1.0, 1.0, 1e-10);
+    try expectEigContains(eigs, 2.0, -3.0, 1e-10);
+    // Already triangular: every sweep must deflate immediately.
+    try testing.expect(iters <= 2);
+}
+
+test "qrAlgorithmComplex: CMat_32 input returns []Complex(f32)" {
+    const alloc = testing.allocator;
+    const Cx32 = std.math.Complex(f32);
+
+    // Same Hermitian case as the f64 test, at f32 precision.
+    var A = try mat.CMat_32.initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.setRow(0, [_]Cx32{ Cx32.init(2, 0), Cx32.init(0, 1) });
+    try A.setRow(1, [_]Cx32{ Cx32.init(0, -1), Cx32.init(2, 0) });
+
+    // The annotation pins the generalized return type: []Complex(Real(T)).
+    const eigs: []Cx32 = try qrAlgorithmComplex(alloc, A, 1000, 1e-6, null);
+    defer alloc.free(eigs);
+
+    try expectEigContainsT(f32, eigs, 1.0, 0.0, 1e-3);
+    try expectEigContainsT(f32, eigs, 3.0, 0.0, 1e-3);
+}
+
+test "qrAlgorithmComplex: CMat NotSquare" {
+    const alloc = testing.allocator;
+
+    var A = try mat.CMat.initZero(alloc, 2, 3);
+    defer A.deinit();
+
+    try testing.expectError(EigenError.NotSquare, qrAlgorithmComplex(alloc, A, 10, 1e-12, null));
 }
 
 test "eigenvaluesComplexArnoldi: Arnoldi + complex QR pipeline" {

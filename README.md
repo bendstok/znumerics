@@ -140,6 +140,12 @@ defer alloc.free(eigs);
 const ceigs = try znum.eigenvaluesComplex(alloc, A, 1000, 1e-12, null);
 defer alloc.free(ceigs);
 
+// Also accepts complex matrices (CMat / CMat_32): the QR iteration then
+// runs in complex arithmetic and eigenvalues do NOT come in conjugate
+// pairs. Returns []Complex(f64) for CMat, []Complex(f32) for CMat_32.
+const zeigs = try znum.eigenvaluesComplex(alloc, Z, 1000, 1e-12, null);
+defer alloc.free(zeigs);
+
 // Polynomial roots (descending coefficients, matching charPoly):
 // x^2 - 3x + 2 -> roots 1 and 2, returned as []Complex(f64)
 const rts = try znum.roots(alloc, &[_]f64{ 1.0, -3.0, 2.0 }, 1000, 1e-12);
