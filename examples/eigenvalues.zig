@@ -156,4 +156,54 @@ pub fn main() !void {
         defer alloc.free(eigs);
         reportComplex("companion of (x-1)(x^2-2x+5) (qrAlgorithmComplex)", eigs);
     }
+
+    std.debug.print("\n=== Eigenvectors via inverse iteration ===\n\n", .{});
+
+    // Same companion matrix: eigenvalues 1 and 1 ± 2i, so one real and two
+    // genuinely complex eigenvectors. Each vector is paired with its
+    // eigenvalue and verified by the residual ||Av - lambda*v||, which is
+    // bounded by the QR tolerance (the eigenvalue error dominates it).
+    {
+        const Cx = std.math.Complex(f64);
+
+        var A = try Mat.initZero(alloc, 3, 3);
+        defer A.deinit();
+        setMat(A, [_][3]f64{
+            .{ 3, -7, 5 },
+            .{ 1, 0, 0 },
+            .{ 0, 1, 0 },
+        });
+
+        // Same (max_iter, tolerance) as passed to complexEigenvectors below,
+        // so the eigenvalues come out in the same order as the vectors.
+        const eigs = try znum.eigen.qrAlgorithmComplex(alloc, A, 1000, 1e-12, null);
+        defer alloc.free(eigs);
+
+        const eigVecs = try znum.eigen.complexEigenvectors(alloc, A, 1000, 1e-12);
+        defer {
+            for (eigVecs) |*v| v.deinit();
+            alloc.free(eigVecs);
+        }
+
+        std.debug.print("companion of (x-1)(x^2-2x+5), unit-norm eigenpairs:\n", .{});
+        for (eigs, eigVecs) |lambda, v| {
+            std.debug.print("  lambda = {d:7.4} {s} {d:.4}i   v = [", .{
+                lambda.re, if (lambda.im < 0) "-" else "+", @abs(lambda.im),
+            });
+            for (0..v.len()) |i| {
+                const vi = v.atUnsafe(i);
+                if (i != 0) std.debug.print(", ", .{});
+                std.debug.print("{d:.4} {s} {d:.4}i", .{ vi.re, if (vi.im < 0) "-" else "+", @abs(vi.im) });
+            }
+
+            var res2: f64 = 0;
+            for (0..A.rows) |r| {
+                var s = Cx.init(0, 0);
+                for (0..A.cols) |c| s = s.add(Cx.init(A.atUnsafe(r, c), 0).mul(v.atUnsafe(c)));
+                const diff = s.sub(lambda.mul(v.atUnsafe(r)));
+                res2 += diff.re * diff.re + diff.im * diff.im;
+            }
+            std.debug.print("]   ||Av - lambda*v|| = {e:.2}\n", .{@sqrt(res2)});
+        }
+    }
 }

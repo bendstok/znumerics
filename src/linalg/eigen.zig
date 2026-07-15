@@ -4,6 +4,7 @@ const vec = @import("../core/vec.zig");
 const err_mod = @import("../error.zig");
 const qr_mod = @import("qrdecomposition.zig");
 const sclr = @import("../core/scalar.zig");
+const gj = @import("gaussjordan.zig");
 
 const Vec = vec.Vec;
 const Mat = mat.Mat;
@@ -314,11 +315,88 @@ pub fn qrAlgorithm(alloc: std.mem.Allocator, A: Mat, max_iter: usize, tolerance:
     return eigs;
 }
 
-pub fn complexEigenvectors(alloc: std.mem.Allocator, A: anytype) !void {
-    const T = mat.ElementOf(A);
-    _ = T;
-    _ = alloc;
-    //const eigens = try qrAlgorithmComplex(alloc, A, 1000, 1e-6, null);
+/// Returns the eigenvectors of A as a slice of unit-norm complex vectors,
+/// in the same order as the eigenvalues from 'qrAlgorithmComplex' called
+/// with the same 'max_iter' and 'tolerance'. Caller owns the slice and each
+/// vector in it.
+///
+/// Uses inverse iteration: for each computed eigenvalue λ, repeatedly solves
+/// (A - λI)y = x and normalizes. Since λ is nearly exact, (A - λI) is nearly
+/// singular and each solve amplifies the eigenvector component, so a few
+/// iterations converge to near machine precision. If a solve hits an exactly
+/// zero pivot, λ is nudged by ~sqrt(eps)·‖A‖ and the solve is retried.
+///
+/// NOTE: the residual ‖Av - λv‖ is bounded by 'tolerance' (the eigenvalue
+/// error dominates it), not by machine eps.
+///
+/// LIMITATION: repeated eigenvalues yield the same eigenvector for each copy
+/// (no deflation/reorthogonalization is performed).
+pub fn complexEigenvectors(alloc: std.mem.Allocator, A: anytype, max_iter: usize, tolerance: sclr.Real(mat.ElementOf(@TypeOf(A)))) ![]vec.Vector(std.math.Complex(sclr.Real(mat.ElementOf(@TypeOf(A))))) {
+    const T = mat.ElementOf(@TypeOf(A));
+    const C = std.math.Complex(sclr.Real(T));
+
+    const eigens = try qrAlgorithmComplex(alloc, A, max_iter, tolerance, null);
+    defer alloc.free(eigens);
+
+    // Scale of A, for the shift nudge when (A - λI) hits an exact zero pivot.
+    var anorm: sclr.Real(T) = 0;
+    for (0..A.rows) |r| {
+        for (0..A.cols) |c| anorm = @max(anorm, sclr.abs(A.atUnsafe(r, c)));
+    }
+    const pert = @max(anorm, 1) * std.math.sqrt(std.math.floatEps(sclr.Real(T)));
+
+    const eigVecs = try alloc.alloc(vec.Vector(C), A.cols);
+    var done: usize = 0;
+    errdefer {
+        for (0..done) |i| eigVecs[i].deinit();
+        alloc.free(eigVecs);
+    }
+
+    var x = try vec.Vector(C).initOnes(alloc, A.cols, true);
+    defer x.deinit();
+    var A_ = try mat.Matrix(C).initZero(alloc, A.rows, A.cols);
+    defer A_.deinit();
+
+    for (0..eigens.len) |eig_nr| {
+        var shift = eigens[eig_nr];
+        x.setAllUnsafe(sclr.one(C));
+
+        var solves: usize = 0;
+        var nudges: usize = 0;
+        var rebuild = true;
+        while (solves < 3) {
+            if (rebuild) {
+                // A_ = A - shift·I in complex arithmetic, promoting real elements.
+                for (0..A_.rows) |r| {
+                    for (0..A_.cols) |c| {
+                        const a_rc = if (comptime sclr.isComplex(T)) A.atUnsafe(r, c) else C.init(A.atUnsafe(r, c), 0);
+                        A_.setUnsafe(r, c, if (r == c) a_rc.sub(shift) else a_rc);
+                    }
+                }
+                rebuild = false;
+            }
+            var y = gj.gaussJordan(alloc, A_, x) catch |e| switch (e) {
+                error.Singular => {
+                    // Exact zero pivot: nudge the shift off the eigenvalue and retry.
+                    if (nudges == 8) return e;
+                    nudges += 1;
+                    shift = shift.add(C.init(pert, 0));
+                    rebuild = true;
+                    continue;
+                },
+                else => return e,
+            };
+            defer y.deinit();
+            y.normalize();
+            x.setAllUnsafe(y.data);
+            solves += 1;
+        }
+
+        eigVecs[eig_nr] = try vec.Vector(C).init(alloc, A.cols, true);
+        eigVecs[eig_nr].setAllUnsafe(x.data);
+        done += 1;
+    }
+    return eigVecs;
 }
 
 /// Returns the eigenvalues of A as a slice of Complex(Real(T)), where T is
@@ -1110,6 +1188,97 @@ test "qrAlgorithmComplex: rotation matrix -> cos +- i*sin" {
     try testing.expectApproxEqAbs(-si, eigs[0].im, 1e-9);
     try testing.expectApproxEqAbs(co, eigs[1].re, 1e-9);
     try testing.expectApproxEqAbs(si, eigs[1].im, 1e-9);
+}
+
+/// Checks every v in 'vs' is unit norm and an eigenvector of A: recovers its
+/// eigenvalue via the Rayleigh quotient λ = vᴴAv, then requires ‖Av - λv‖ < tol.
+fn expectEigvecResiduals(A: anytype, vs: []const vec.Vector(std.math.Complex(sclr.Real(mat.ElementOf(@TypeOf(A))))), tole: sclr.Real(mat.ElementOf(@TypeOf(A)))) !void {
+    const T = mat.ElementOf(@TypeOf(A));
+    const C = std.math.Complex(sclr.Real(T));
+
+    for (vs) |v| {
+        try testing.expectApproxEqAbs(@as(sclr.Real(T), 1), v.norm(), 1e-9);
+
+        const n = v.len();
+        const Av = try testing.allocator.alloc(C, n);
+        defer testing.allocator.free(Av);
+
+        var lambda = C.init(0, 0);
+        for (0..n) |r| {
+            var s = C.init(0, 0);
+            for (0..n) |c| {
+                const a_rc = if (comptime sclr.isComplex(T)) A.atUnsafe(r, c) else C.init(A.atUnsafe(r, c), 0);
+                s = s.add(a_rc.mul(v.atUnsafe(c)));
+            }
+            Av[r] = s;
+            lambda = lambda.add(v.atUnsafe(r).conjugate().mul(s));
+        }
+
+        var res2: sclr.Real(T) = 0;
+        for (0..n) |r| res2 += sclr.absSq(Av[r].sub(lambda.mul(v.atUnsafe(r))));
+        try testing.expect(std.math.sqrt(res2) < tole);
+    }
+}
+
+test "complexEigenvectors: real symmetric 3x3" {
+    const alloc = testing.allocator;
+
+    var A = try Mat.initZero(alloc, 3, 3);
+    defer A.deinit();
+    setMat(A, [_][3]f64{
+        .{ 2, 1, 0 },
+        .{ 1, 3, 1 },
+        .{ 0, 1, 4 },
+    });
+
+    const vs = try complexEigenvectors(alloc, A, 1000, 1e-12);
+    defer {
+        for (vs) |*v| v.deinit();
+        alloc.free(vs);
+    }
+
+    try testing.expectEqual(@as(usize, 3), vs.len);
+    try expectEigvecResiduals(A, vs, 1e-9);
+}
+
+test "complexEigenvectors: real matrix with complex pair (rotation + scaling)" {
+    const alloc = testing.allocator;
+
+    // Eigenvalues 1 ± 2i: eigenvectors are genuinely complex.
+    var A = try Mat.initZero(alloc, 2, 2);
+    defer A.deinit();
+    setMat(A, [_][2]f64{
+        .{ 1, -2 },
+        .{ 2, 1 },
+    });
+
+    const vs = try complexEigenvectors(alloc, A, 1000, 1e-12);
+    defer {
+        for (vs) |*v| v.deinit();
+        alloc.free(vs);
+    }
+
+    try testing.expectEqual(@as(usize, 2), vs.len);
+    try expectEigvecResiduals(A, vs, 1e-9);
+}
+
+test "complexEigenvectors: CMat Hermitian [[2, i], [-i, 2]]" {
+    const alloc = testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    var A = try mat.CMat.initZero(alloc, 2, 2);
+    defer A.deinit();
+    try A.setRow(0, [_]Cx{ Cx.init(2, 0), Cx.init(0, 1) });
+    try A.setRow(1, [_]Cx{ Cx.init(0, -1), Cx.init(2, 0) });
+
+    const vs = try complexEigenvectors(alloc, A, 1000, 1e-12);
+    defer {
+        for (vs) |*v| v.deinit();
+        alloc.free(vs);
+    }
+
+    try testing.expectEqual(@as(usize, 2), vs.len);
+    try expectEigvecResiduals(A, vs, 1e-9);
 }
 
 test "qrAlgorithmComplex: companion of (x-1)(x^2-2x+5) -> 1, 1 +- 2i" {

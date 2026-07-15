@@ -146,6 +146,15 @@ defer alloc.free(ceigs);
 const zeigs = try znum.eigenvaluesComplex(alloc, Z, 1000, 1e-12, null);
 defer alloc.free(zeigs);
 
+// Eigenvectors (inverse iteration): unit-norm []Vector(Complex(f64)), in
+// the same order as eigenvaluesComplex with the same (max_iter, tolerance).
+// Caller owns the slice and each vector in it.
+const evecs = try znum.eigen.complexEigenvectors(alloc, A, 1000, 1e-12);
+defer {
+    for (evecs) |*v| v.deinit();
+    alloc.free(evecs);
+}
+
 // Polynomial roots (descending coefficients, matching charPoly):
 // x^2 - 3x + 2 -> roots 1 and 2, returned as []Complex(f64)
 const rts = try znum.roots(alloc, &[_]f64{ 1.0, -3.0, 2.0 }, 1000, 1e-12);
@@ -157,6 +166,11 @@ defer alloc.free(rts);
 // reduction pipeline, for the sparse/partial-spectrum niche),
 // znum.eigen.arnoldi_iteration (Krylov basis + Hessenberg projection)
 ```
+
+NB: for complexEigenvectors the residual ||Av - lambda*v|| is bounded by the
+QR tolerance, not machine eps: inverse iteration nails the vector, so the
+residual just measures the eigenvalue error (~1e-14 at tolerance 1e-12).
+Repeated eigenvalues return the same vector for each copy (no deflation).
 
 ### Solve Ax = b
 ```zig
