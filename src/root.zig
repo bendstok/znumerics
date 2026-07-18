@@ -44,4 +44,5 @@ test {
     _ = @import("linalg/qrdecomposition.zig");
     _ = @import("ode/runge_kutta.zig");
     _ = @import("linalg/eigen.zig");
+    _ = @import("proptest.zig");
 }
