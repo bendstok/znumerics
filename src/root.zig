@@ -16,6 +16,7 @@ pub const lsim = @import("signal/lsim.zig");
 pub const control = @import("control/pid.zig");
 pub const ode = @import("ode/runge_kutta.zig");
 pub const eigen = @import("linalg/eigen.zig");
+pub const SVD = @import("linalg/svd.zig");
 
 // Convenience re-export
 pub const Vector = vec.Vector;
@@ -44,5 +45,6 @@ test {
     _ = @import("linalg/qrdecomposition.zig");
     _ = @import("ode/runge_kutta.zig");
     _ = @import("linalg/eigen.zig");
+    _ = @import("linalg/svd.zig");
     _ = @import("proptest.zig");
 }

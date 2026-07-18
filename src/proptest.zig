@@ -11,6 +11,7 @@ const lu_mod = @import("linalg/lu.zig");
 const qr_mod = @import("linalg/qrdecomposition.zig");
 const chol_mod = @import("linalg/cholesky.zig");
 const eigen_mod = @import("linalg/eigen.zig");
+const svd_mod = @import("linalg/svd.zig");
 
 const Cx = std.math.Complex(f64);
 const Mat = mat.Mat;
@@ -329,4 +330,118 @@ test "property: matMultSIMD agrees with matMult" {
         const tol = 1e-13 * @as(f64, @floatFromInt(n));
         try std.testing.expect(maxAbsDiff(f64, C1, C2) < tol);
     };
+}
+
+// ----------------------------------- SVD (thin): U * S * V^T == A
+
+fn checkSVD(alloc: std.mem.Allocator, m: usize, n: usize, seed: u64) !void {
+    var A = try mat.Matrix(f64).initRandom(alloc, m, n, seed, -1.0, 1.0);
+    defer A.deinit();
+
+    var res = try svd_mod.svdJacobi(alloc, A, 100);
+    defer res.deinit();
+
+    // Thin shapes: U is m x n, S and V are n x n.
+    try std.testing.expectEqual(m, res.U.rows);
+    try std.testing.expectEqual(n, res.U.cols);
+    try std.testing.expectEqual(n, res.S.rows);
+    try std.testing.expectEqual(n, res.S.cols);
+    try std.testing.expectEqual(n, res.V.rows);
+    try std.testing.expectEqual(n, res.V.cols);
+
+    const tol = 1e-10 * @as(f64, @floatFromInt(n)) * (1.0 + A.norm1());
+
+    // Reconstruction: U * S * V^T == A.
+    var US = try mat.matMult(alloc, res.U, res.S);
+    defer US.deinit();
+    var Vt = try mat.transpose(res.V, alloc);
+    defer Vt.deinit();
+    var USVt = try mat.matMult(alloc, US, Vt);
+    defer USVt.deinit();
+    try std.testing.expect(maxAbsDiff(f64, USVt, A) < tol);
+
+    // Orthonormal factors (random A is full rank with probability 1).
+    var I = try mat.Matrix(f64).initIdentity(alloc, n, n);
+    defer I.deinit();
+    var Ut = try mat.transpose(res.U, alloc);
+    defer Ut.deinit();
+    var UtU = try mat.matMult(alloc, Ut, res.U);
+    defer UtU.deinit();
+    try std.testing.expect(maxAbsDiff(f64, UtU, I) < tol);
+    var VtV = try mat.matMult(alloc, Vt, res.V);
+    defer VtV.deinit();
+    try std.testing.expect(maxAbsDiff(f64, VtV, I) < tol);
+
+    // Singular values nonnegative and descending.
+    for (0..n) |j| {
+        const s = res.S.atUnsafe(j, j);
+        try std.testing.expect(s >= 0);
+        if (j > 0) try std.testing.expect(res.S.atUnsafe(j - 1, j - 1) >= s);
+    }
+
+    // Cross-check against the eigensolver: sigma_j^2 == eig_j(A^T A).
+    var At = try mat.transpose(A, alloc);
+    defer At.deinit();
+    var AtA = try mat.matMult(alloc, At, A);
+    defer AtA.deinit();
+    const lams = try eigen_mod.eigenvalues(alloc, AtA, 50_000, 1e-12, null);
+    defer alloc.free(lams);
+    std.mem.sort(f64, lams, {}, std.sort.desc(f64));
+    const scale = 1.0 + @sqrt(@max(lams[0], 0.0));
+    for (0..n) |j| {
+        const sig_ref = @sqrt(@max(lams[j], 0.0));
+        try std.testing.expect(@abs(res.S.atUnsafe(j, j) - sig_ref) < 1e-7 * scale);
+    }
+}
+
+test "property: SVD (thin): reconstruction, orthonormality, sigma order" {
+    const alloc = std.testing.allocator;
+    for (sizes) |n| for (seeds) |seed| {
+        try checkSVD(alloc, n, n, seed); // square
+    };
+    for (seeds) |seed| { // tall
+        try checkSVD(alloc, 5, 3, seed);
+        try checkSVD(alloc, 8, 2, seed);
+    }
+}
+
+test "property: SVD handles rank-deficient input" {
+    const alloc = std.testing.allocator;
+    const m = 5;
+    const n = 3;
+    for (seeds) |seed| {
+        var x = try vec.Vector(f64).initRandom(alloc, m, true, seed, -1.0, 1.0);
+        defer x.deinit();
+        var y = try vec.Vector(f64).initRandom(alloc, n, true, seed + 1000, -1.0, 1.0);
+        defer y.deinit();
+
+        // A = x * y^T has rank 1: sigma_0 = ||x||*||y||, the rest are 0.
+        var A = try mat.Matrix(f64).initZero(alloc, m, n);
+        defer A.deinit();
+        for (0..m) |i| for (0..n) |j| {
+            A.setUnsafe(i, j, x.atUnsafe(i) * y.atUnsafe(j));
+        };
+
+        var res = try svd_mod.svdJacobi(alloc, A, 100);
+        defer res.deinit();
+
+        var nx: f64 = 0;
+        for (x.data) |v| nx += v * v;
+        var ny: f64 = 0;
+        for (y.data) |v| ny += v * v;
+        const expected = @sqrt(nx) * @sqrt(ny);
+
+        const tol = 1e-10 * (1.0 + expected);
+        try std.testing.expectApproxEqAbs(expected, res.S.atUnsafe(0, 0), tol);
+        for (1..n) |j| try std.testing.expect(res.S.atUnsafe(j, j) < tol);
+
+        // Reconstruction holds even though U's trailing columns are unnormalized.
+        var US = try mat.matMult(alloc, res.U, res.S);
+        defer US.deinit();
+        var Vt = try mat.transpose(res.V, alloc);
+        defer Vt.deinit();
+        var USVt = try mat.matMult(alloc, US, Vt);
+        defer USVt.deinit();
+        try std.testing.expect(maxAbsDiff(f64, USVt, A) < 1e-10 * (1.0 + A.norm1()));
+    }
 }

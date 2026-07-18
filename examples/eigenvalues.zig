@@ -206,4 +206,23 @@ pub fn main() !void {
             std.debug.print("]   ||Av - lambda*v|| = {e:.2}\n", .{@sqrt(res2)});
         }
     }
+    var A = try Mat.initZero(alloc, 3, 3);
+    defer A.deinit();
+    const data = [_][8]f64{
+        .{ 0, 3, 4, 1, 6, 5, 3, 4 },
+        .{ 3, 6, 3, 4, 2, 2, 1, 4 },
+        .{ 4, 3, 6, 2, 2, 6, 3, 4 },
+        .{ 1, 4, 2, 4, 3, 6, 5, 0 },
+        .{ 6, 2, 2, 3, 6, 0, 4, 3 },
+        .{ 5, 2, 6, 6, 0, 0, 1, 4 },
+        .{ 3, 1, 3, 5, 4, 1, 6, 3 },
+        .{ 4, 4, 4, 0, 3, 4, 3, 0 },
+    };
+    setMat(A, data);
+    std.debug.print("svdJacobi on Matrix: \n", .{});
+    try A.printMat();
+    var res = try znum.SVD.svdJacobi(alloc, A, 10);
+    std.debug.print("Result of SVD: \n", .{});
+    try res.print();
+    defer res.deinit();
 }

@@ -192,6 +192,23 @@ NB: lu and gaussJordan pivot on |.|, so complex systems work as-is.
 qrDecomposition uses Householder reflections (I - 2vv^H); Q is unitary
 and R = Q^H * A for complex matrices.
 
+### SVD (thin)
+```zig
+// One-sided Jacobi (Hestenes). (alloc, A, max sweeps); A is m x n, m >= n.
+var svd = try znum.SVD.svdJacobi(alloc, A, 100);
+defer svd.deinit();
+// svd.U (m x n, orthonormal columns), svd.S (n x n diagonal, singular
+// values sorted descending), svd.V (n x n, orthogonal): A = U * S * V^T
+```
+
+NB: convergence takes a handful of sweeps; after that every column pair
+passes the orthogonality guard, so the remaining sweeps only cost the
+dot products.
+
+NB: for rank-deficient A the trailing singular values are ~0 and their U
+columns are left unnormalized, so U^T * U = I holds on the leading rank
+columns only.
+
 ### Simulate LTI systems (lsim)
 ```zig
 // x' = -x + u, y = x
