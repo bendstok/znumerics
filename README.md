@@ -199,6 +199,15 @@ var svd = try znum.SVD.svdJacobi(alloc, A, 100);
 defer svd.deinit();
 // svd.U (m x n, orthonormal columns), svd.S (n x n diagonal, singular
 // values sorted descending), svd.V (n x n, orthogonal): A = U * S * V^T
+
+// Moore-Penrose pseudoinverse (n x m). Any shape and rank; for square
+// invertible A it equals inverse(A), for tall full-rank A, pinv(A) * b
+// solves Ax = b in the least-squares sense.
+var Ap = try znum.SVD.pinv(alloc, A, 100);
+defer Ap.deinit();
+
+// also: znum.SVD.singularValues, znum.SVD.rank (numerical rank),
+// znum.SVD.cond2 (sigma_max / sigma_min), znum.SVD.norm2 (spectral norm)
 ```
 
 NB: convergence takes a handful of sweeps; after that every column pair
@@ -208,6 +217,11 @@ dot products.
 NB: for rank-deficient A the trailing singular values are ~0 and their U
 columns are left unnormalized, so U^T * U = I holds on the leading rank
 columns only.
+
+NB: pinv, rank, and cond2 share one cutoff: singular values at or below
+eps * max(m, n) * sigma_max count as zero (the MATLAB/Octave pinv
+tolerance). So cond2 returns inf exactly when rank reports deficiency,
+rather than a round-off ratio like ~1e16.
 
 ### Simulate LTI systems (lsim)
 ```zig

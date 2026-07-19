@@ -145,3 +145,100 @@ pub fn svdJacobi(alloc: std.mem.Allocator, U: anytype, max_iter: usize) !SVDResu
 
     return .{ .U = A_k, .S = S, .V = V, .alloc = alloc };
 }
+
+/// Moore-Penrose pseudoinverse via the SVD: A+ = V * S+ * U^T, where S+
+/// takes the reciprocal of each singular value above the cutoff
+/// eps * max(m, n) * sigma_max and zeroes the rest (MATLAB/Octave pinv
+/// convention). Returns an n x m matrix for an m x n input; caller owns it.
+///
+/// Works for any shape and rank: wide inputs are factored through A^T
+/// (the SVD of A^T gives A+ = U_B * S+ * V_B^T directly, no final
+/// transpose), and rank-deficient inputs are handled by the cutoff.
+///
+/// For square invertible A this equals inverse(A). For tall full-rank A,
+/// pinv(A) * b is the least-squares solution of Ax = b.
+pub fn pinv(alloc: std.mem.Allocator, A: anytype, max_iter: usize) !mat.Matrix(mat.ElementOf(@TypeOf(A))) {
+    const wide = A.rows < A.cols; // svdJacobi wants m >= n
+
+    var At = if (wide) try mat.transpose(A, alloc) else undefined;
+    defer if (wide) At.deinit();
+
+    var svdres = try svdJacobi(alloc, if (wide) At else A, max_iter);
+    defer svdres.deinit();
+
+    // MATLAB/Octave tolerance: t = eps * max(m, n) * sigma_max
+    const tol = std.math.floatEps(f64) *
+        @as(f64, @floatFromInt(@max(A.rows, A.cols))) * svdres.S.atUnsafe(0, 0);
+
+    // S -> S+ in place: reciprocal above tol, zero below
+    for (0..svdres.S.cols) |j| {
+        const s = svdres.S.atUnsafe(j, j);
+        svdres.S.setUnsafe(j, j, if (s > tol) 1.0 / s else 0.0);
+    }
+
+    // tall/square: A+ = V * S+ * U^T; wide: A+ = U_B * S+ * V_B^T
+    const left = if (wide) svdres.U else svdres.V;
+    const right = if (wide) svdres.V else svdres.U;
+
+    var LS = try mat.matMult(alloc, left, svdres.S);
+    defer LS.deinit();
+    var Rt = try mat.transpose(right, alloc);
+    defer Rt.deinit();
+    return try mat.matMult(alloc, LS, Rt);
+}
+
+/// The singular values of A, sorted descending (all >= 0). Works for any
+/// shape (wide inputs are transposed internally; the singular values of
+/// A^T equal those of A). Caller owns the returned slice.
+pub fn singularValues(alloc: std.mem.Allocator, A: anytype, max_iter: usize) ![]f64 {
+    const wide = A.rows < A.cols;
+    var At = if (wide) try mat.transpose(A, alloc) else undefined;
+    defer if (wide) At.deinit();
+
+    var svdres = try svdJacobi(alloc, if (wide) At else A, max_iter);
+    defer svdres.deinit();
+
+    const k = svdres.S.rows;
+    const s = try alloc.alloc(f64, k);
+    for (0..k) |j| s[j] = svdres.S.atUnsafe(j, j);
+    return s;
+}
+
+/// Numerical rank: the number of singular values above tol * sigma_max.
+/// Pass null for tol to get the MATLAB/Octave default eps * max(m, n).
+pub fn rank(alloc: std.mem.Allocator, A: anytype, max_iter: usize, tol: ?f64) !usize {
+    const s = try singularValues(alloc, A, max_iter);
+    defer alloc.free(s);
+
+    const rel = tol orelse (std.math.floatEps(f64) * @as(f64, @floatFromInt(@max(A.rows, A.cols))));
+    const t = rel * s[0];
+    var r: usize = 0;
+    for (s) |x| {
+        if (x > t) r += 1;
+    }
+    return r;
+}
+
+/// 2-norm condition number: sigma_max / sigma_min.
+///
+/// Returns inf if sigma_min falls below the rank tolerance
+/// eps * max(m, n) * sigma_max — i.e. the matrix is numerically singular.
+/// (A computed sigma_min below that level is round-off noise, so the ratio
+/// would be a meaningless ~1e16 rather than the true value, inf.)
+pub fn cond2(alloc: std.mem.Allocator, A: anytype, max_iter: usize) !f64 {
+    const s = try singularValues(alloc, A, max_iter);
+    defer alloc.free(s);
+
+    const t = std.math.floatEps(f64) * @as(f64, @floatFromInt(@max(A.rows, A.cols))) * s[0];
+    const smin = s[s.len - 1];
+    if (smin <= t) return std.math.inf(f64);
+    return s[0] / smin;
+}
+
+/// Spectral norm ||A||_2 = sigma_max: the largest factor by which A can
+/// stretch a vector.
+pub fn norm2(alloc: std.mem.Allocator, A: anytype, max_iter: usize) !f64 {
+    const s = try singularValues(alloc, A, max_iter);
+    defer alloc.free(s);
+    return s[0];
+}

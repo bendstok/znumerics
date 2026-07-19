@@ -445,3 +445,165 @@ test "property: SVD handles rank-deficient input" {
         try std.testing.expect(maxAbsDiff(f64, USVt, A) < 1e-10 * (1.0 + A.norm1()));
     }
 }
+
+// ------------------------------------ pinv: Moore-Penrose conditions
+
+fn checkPinv(alloc: std.mem.Allocator, m: usize, n: usize, seed: u64) !void {
+    var A = try mat.Matrix(f64).initRandom(alloc, m, n, seed, -1.0, 1.0);
+    defer A.deinit();
+
+    var P = try svd_mod.pinv(alloc, A, 100);
+    defer P.deinit();
+    try std.testing.expectEqual(n, P.rows);
+    try std.testing.expectEqual(m, P.cols);
+
+    // Error scale ~ eps * cond(A); norm1(A) * norm1(P) ~ cond, so the
+    // tolerance loosens automatically for ill-conditioned draws.
+    const tol = 1e-9 * (1.0 + A.norm1() * P.norm1());
+
+    var AP = try mat.matMult(alloc, A, P);
+    defer AP.deinit();
+    var PA = try mat.matMult(alloc, P, A);
+    defer PA.deinit();
+
+    // 1. A * P * A == A
+    var APA = try mat.matMult(alloc, AP, A);
+    defer APA.deinit();
+    try std.testing.expect(maxAbsDiff(f64, APA, A) < tol);
+
+    // 2. P * A * P == P
+    var PAP = try mat.matMult(alloc, PA, P);
+    defer PAP.deinit();
+    try std.testing.expect(maxAbsDiff(f64, PAP, P) < tol);
+
+    // 3. + 4. A*P and P*A are symmetric.
+    var APt = try mat.transpose(AP, alloc);
+    defer APt.deinit();
+    try std.testing.expect(maxAbsDiff(f64, AP, APt) < tol);
+    var PAt = try mat.transpose(PA, alloc);
+    defer PAt.deinit();
+    try std.testing.expect(maxAbsDiff(f64, PA, PAt) < tol);
+}
+
+test "property: pinv satisfies the Moore-Penrose conditions" {
+    const alloc = std.testing.allocator;
+    for (seeds) |seed| {
+        try checkPinv(alloc, 4, 4, seed); // square
+        try checkPinv(alloc, 5, 3, seed); // tall
+        try checkPinv(alloc, 3, 5, seed); // wide (transpose path)
+    }
+}
+
+test "property: pinv == inverse for full-rank square A" {
+    const alloc = std.testing.allocator;
+    for (sizes) |n| for (seeds) |seed| {
+        var A = try randMat(f64, alloc, n, seed);
+        defer A.deinit();
+        var P = try svd_mod.pinv(alloc, A, 100);
+        defer P.deinit();
+        var Ainv = try mat.inverse(alloc, A);
+        defer Ainv.deinit();
+        try std.testing.expect(maxAbsDiff(f64, P, Ainv) < 1e-8 * (1.0 + A.norm1() * P.norm1()));
+    };
+}
+
+test "property: pinv of rank-1 matrix matches closed form" {
+    const alloc = std.testing.allocator;
+    const m = 5;
+    const n = 3;
+    for (seeds) |seed| {
+        var x = try vec.Vector(f64).initRandom(alloc, m, true, seed, -1.0, 1.0);
+        defer x.deinit();
+        var y = try vec.Vector(f64).initRandom(alloc, n, true, seed + 1000, -1.0, 1.0);
+        defer y.deinit();
+
+        var nx2: f64 = 0;
+        for (x.data) |v| nx2 += v * v;
+        var ny2: f64 = 0;
+        for (y.data) |v| ny2 += v * v;
+
+        // A = x * y^T  =>  A+ = y * x^T / (||x||^2 * ||y||^2), n x m.
+        var A = try mat.Matrix(f64).initZero(alloc, m, n);
+        defer A.deinit();
+        for (0..m) |i| for (0..n) |j| {
+            A.setUnsafe(i, j, x.atUnsafe(i) * y.atUnsafe(j));
+        };
+        var expected = try mat.Matrix(f64).initZero(alloc, n, m);
+        defer expected.deinit();
+        for (0..n) |i| for (0..m) |j| {
+            expected.setUnsafe(i, j, y.atUnsafe(i) * x.atUnsafe(j) / (nx2 * ny2));
+        };
+
+        var P = try svd_mod.pinv(alloc, A, 100);
+        defer P.deinit();
+        try std.testing.expect(maxAbsDiff(f64, P, expected) < 1e-10 * (1.0 + expected.norm1()));
+    }
+}
+
+// -------------------------------------- rank / cond2 / norm2 via SVD
+
+test "rank, cond2, norm2: known answers on a diagonal matrix" {
+    const alloc = std.testing.allocator;
+
+    // diag(3, 2, 0.5): norm2 = 3, cond2 = 6, rank = 3.
+    var D = try mat.Matrix(f64).initZero(alloc, 3, 3);
+    defer D.deinit();
+    D.setUnsafe(0, 0, 3.0);
+    D.setUnsafe(1, 1, 2.0);
+    D.setUnsafe(2, 2, 0.5);
+
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), try svd_mod.norm2(alloc, D, 100), 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), try svd_mod.cond2(alloc, D, 100), 1e-11);
+    try std.testing.expectEqual(@as(usize, 3), try svd_mod.rank(alloc, D, 100, null));
+}
+
+test "property: rank and cond2 detect rank deficiency" {
+    const alloc = std.testing.allocator;
+    const m = 5;
+    const n = 3;
+    for (seeds) |seed| {
+        var x = try vec.Vector(f64).initRandom(alloc, m, true, seed, -1.0, 1.0);
+        defer x.deinit();
+        var y = try vec.Vector(f64).initRandom(alloc, n, true, seed + 1000, -1.0, 1.0);
+        defer y.deinit();
+
+        var A = try mat.Matrix(f64).initZero(alloc, m, n);
+        defer A.deinit();
+        for (0..m) |i| for (0..n) |j| {
+            A.setUnsafe(i, j, x.atUnsafe(i) * y.atUnsafe(j));
+        };
+
+        try std.testing.expectEqual(@as(usize, 1), try svd_mod.rank(alloc, A, 100, null));
+        try std.testing.expect(std.math.isInf(try svd_mod.cond2(alloc, A, 100)));
+    }
+}
+
+test "property: rank is full and norm2 bounds A*x for random A" {
+    const alloc = std.testing.allocator;
+    for (sizes) |n| for (seeds) |seed| {
+        var A = try randMat(f64, alloc, n, seed);
+        defer A.deinit();
+
+        // Random matrices are full rank with probability 1.
+        try std.testing.expectEqual(n, try svd_mod.rank(alloc, A, 100, null));
+
+        // ||A*x|| <= norm2(A) * ||x|| for any x.
+        const n2 = try svd_mod.norm2(alloc, A, 100);
+        var x = try randVec(f64, alloc, n, seed + 1000);
+        defer x.deinit();
+        var Ax = try mat.matVec(alloc, A, x);
+        defer Ax.deinit();
+        var nx: f64 = 0;
+        for (x.data) |v| nx += v * v;
+        var nAx: f64 = 0;
+        for (Ax.data) |v| nAx += v * v;
+        try std.testing.expect(@sqrt(nAx) <= n2 * @sqrt(nx) * (1.0 + 1e-10));
+
+        // Q from the QR decomposition is orthogonal: norm2(Q) == 1.
+        var qr = try qr_mod.qrDecomposition(alloc, A);
+        defer qr[0].deinit();
+        defer qr[1].deinit();
+        const nq = try svd_mod.norm2(alloc, qr[0], 100);
+        try std.testing.expectApproxEqAbs(@as(f64, 1.0), nq, 1e-10);
+    };
+}
