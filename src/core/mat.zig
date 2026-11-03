@@ -213,6 +213,32 @@ pub fn Matrix(comptime T: type) type {
             @memset(self.data, val);
         }
 
+        /// Fills the matrix from a function of the entry's position:
+        /// A[r][c] = function(r, c). In place.
+        ///
+        /// Example (Hilbert matrix):
+        /// ```
+        /// fn hilbert(r: usize, c: usize) f64 {
+        ///     return 1.0 / @as(f64, @floatFromInt(r + c + 1));
+        /// }
+        /// A.generator(hilbert);
+        /// ```
+        pub fn generator(self: Self, comptime function: fn (usize, usize) T) void {
+            for (0..self.rows) |r| {
+                for (0..self.cols) |c| {
+                    self.data[idx(self, r, c)] = function(r, c);
+                }
+            }
+        }
+
+        /// Transforms each entry based on its value: A[r][c] = function(A[r][c]).
+        /// In place.
+        pub fn map(self: Self, comptime function: fn (T) T) void {
+            for (self.data) |*v| {
+                v.* = function(v.*);
+            }
+        }
+
         // TODO: We probably need more advanced type matching for comptime floats?
         /// Sets all values in a row to 'new_values'.
         ///
@@ -2030,4 +2056,76 @@ test "initFromRows: OOM does not leak" {
             try std.testing.expect(e == error.OutOfMemory);
         }
     }
+}
+
+test "generator: fill from position" {
+    const alloc = std.testing.allocator;
+
+    const fns = struct {
+        fn linearIdx(r: usize, c: usize) f64 {
+            return @floatFromInt(r * 10 + c);
+        }
+        fn hilbert(r: usize, c: usize) f64 {
+            return 1.0 / @as(f64, @floatFromInt(r + c + 1));
+        }
+    };
+
+    var A = try Mat.init(alloc, 2, 3);
+    defer A.deinit();
+    A.generator(fns.linearIdx);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), A.atUnsafe(0, 0), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), A.atUnsafe(0, 2), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 12.0), A.atUnsafe(1, 2), 1e-15);
+
+    // Overwrites existing contents
+    var H = try Mat.initZero(alloc, 3, 3);
+    defer H.deinit();
+    H.generator(fns.hilbert);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), H.atUnsafe(0, 0), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0 / 3.0), H.atUnsafe(1, 1), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.2), H.atUnsafe(2, 2), 1e-15);
+}
+
+test "map: transform by value (f64, int, complex)" {
+    const alloc = std.testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    const fns = struct {
+        fn double(x: f64) f64 {
+            return 2.0 * x;
+        }
+        fn sq(x: i64) i64 {
+            return x * x;
+        }
+        fn conj(z: Cx) Cx {
+            return Cx.init(z.re, -z.im);
+        }
+    };
+
+    var A = try Mat.initFromRows(alloc, .{
+        .{ 1.0, -2.0 },
+        .{ 3.0, 4.0 },
+    });
+    defer A.deinit();
+    A.map(fns.double);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), A.atUnsafe(0, 0), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, -4.0), A.atUnsafe(0, 1), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 8.0), A.atUnsafe(1, 1), 1e-15);
+
+    A.map(std.math.sin());
+
+    var M = try Matrix(i64).initFromRows(alloc, .{
+        .{ -3, 2 },
+    });
+    defer M.deinit();
+    M.map(fns.sq);
+    try std.testing.expect(M.atUnsafe(0, 0) == 9 and M.atUnsafe(0, 1) == 4);
+
+    var Z = try CMat.initFromRows(alloc, .{
+        .{ Cx.init(1.0, 2.0), Cx.init(0.0, -1.0) },
+    });
+    defer Z.deinit();
+    Z.map(fns.conj);
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 0), Cx.init(1.0, -2.0)));
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 1), Cx.init(0.0, 1.0)));
 }

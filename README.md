@@ -80,6 +80,19 @@ defer eA.deinit();
 var R = try Mat.initRandom(alloc, 3, 3, 42, -1.0, 1.0);
 defer R.deinit();
 
+// In place: generator fills A[r][c] = f(r, c), map sets A[r][c] = f(A[r][c]).
+// Both take a comptime fn (no captured state) that must return the same type as the matrix value type.
+
+fn hilbert(r: usize, c: usize) f64 {
+     return 1.0 / @as(f64, @floatFromInt(r + c + 1));
+}
+fn sin(x: f64) f64 {
+    return @sin(x);
+}
+
+R.generator(hilbert); // fn (usize, usize) f64
+R.map(sin);           // fn (f64) f64
+
 // also: initIdentity, transpose, determinant, trace, charPoly, norm1,
 // expand, swapRow, getRow/getCol/setCol, isUpperTriangular/isLowerTriangular
 ```
