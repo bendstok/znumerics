@@ -48,10 +48,19 @@ zig build examples
 const znum = @import("znumerics");
 const Mat = znum.Mat; // Mat is Matrix(f64)
 
-var A = try Mat.initZero(alloc, 2, 2);
+// From a row literal: dimensions and shape are checked at compile time
+// (ragged rows are a compile error). Rows can be tuples or arrays.
+var A = try Mat.initFromRows(alloc, .{
+    .{ 2.0, 1.0 },
+    .{ 1.0, 2.0 },
+});
 defer A.deinit();
-try A.setRow(0, [_]f64{ 2.0, 1.0 });
-try A.setRow(1, [_]f64{ 1.0, 2.0 });
+
+// Or build it up imperatively
+var A2 = try Mat.initZero(alloc, 2, 2);
+defer A2.deinit();
+try A2.setRow(0, [_]f64{ 2.0, 1.0 });
+try A2.setRow(1, [_]f64{ 1.0, 2.0 });
 
 var B = try A.add(A); // also: sub, addInPlace, subInPlace, addSIMD
 defer B.deinit();
@@ -85,6 +94,13 @@ const Cx = std.math.Complex(f64);
 var Z = try CMat.initIdentity(alloc, 2, 2);
 defer Z.deinit();
 try Z.set(0, 0, Cx.init(0.0, 1.0)); // i
+
+// initFromRows accepts reals per element for complex matrices
+var W = try CMat.initFromRows(alloc, .{
+    .{ 1.0, Cx.init(0.0, 1.0) },
+    .{ Cx.init(0.0, -1.0), 2.0 },
+});
+defer W.deinit();
 
 // Same functions as for f64
 var Zinv = try znum.mat.inverse(alloc, Z);

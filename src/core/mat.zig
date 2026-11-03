@@ -98,6 +98,68 @@ pub fn Matrix(comptime T: type) type {
             return .{ .alloc = alloc, .rows = rows, .cols = cols, .data = data };
         }
 
+        /// Builds a matrix from a row literal, e.g.
+        /// `Mat.initFromRows(alloc, .{ .{ 2.0, 1.0 }, .{ 1.0, 2.0 } })`.
+        ///
+        /// `rows` is a tuple or array of rows; each row is a tuple or array
+        /// of elements. All rows must have the same length. Dimensions and
+        /// shape are validated at compile time.
+        ///
+        /// For complex matrices, reals are accepted per element:
+        /// `CMat.initFromRows(alloc, .{ .{ 1.0, Cx.init(0, 1) } })`.
+        pub fn initFromRows(
+            alloc: std.mem.Allocator,
+            rows: anytype,
+        ) std.mem.Allocator.Error!Self {
+            comptime {
+                const n: usize = switch (@typeInfo(@TypeOf(rows))) {
+                    .array => |arr| arr.len,
+                    .@"struct" => |str| blk: {
+                        if (!str.is_tuple) {
+                            @compileError("MAT| initFromRows: expected a tuple or array of rows, got " ++ @typeName(@TypeOf(rows)));
+                        }
+                        break :blk str.fields.len;
+                    },
+                    else => @compileError("MAT| initFromRows: expected a tuple or array of rows, got " ++ @typeName(@TypeOf(rows))),
+                };
+                if (n == 0) {
+                    @compileError("MAT| initFromRows: needs at least one row");
+                }
+            }
+
+            const _rows = rows.len;
+            const _cols = rows[0].len;
+            if (comptime _cols == 0) {
+                @compileError("MAT| initFromRows: rows must have at least one element");
+            }
+
+            const data = try alloc.alloc(T, _rows * _cols);
+            errdefer alloc.free(data);
+
+            inline for (rows, 0..) |row, i| {
+                comptime switch (@typeInfo(@TypeOf(row))) {
+                    .array => {},
+                    .@"struct" => |str| if (!str.is_tuple) {
+                        @compileError("MAT| initFromRows: row " ++ std.fmt.comptimePrint("{d}", .{i}) ++ " is not a tuple or array");
+                    },
+                    else => @compileError("MAT| initFromRows: row " ++ std.fmt.comptimePrint("{d}", .{i}) ++ " is not a tuple or array"),
+                };
+                if (comptime row.len != _cols) {
+                    @compileError("MAT| initFromRows: row " ++ std.fmt.comptimePrint("{d} has length {d}, expected {d}", .{ i, row.len, _cols }));
+                }
+                inline for (row, 0..) |elem, j| {
+                    // coerce reals into complex matrices
+                    const E = @TypeOf(elem);
+                    data[i * _cols + j] = if (comptime sclr.isComplex(T) and !sclr.isComplex(E))
+                        sclr.fromReal(T, elem)
+                    else
+                        @as(T, elem);
+                }
+            }
+
+            return .{ .alloc = alloc, .rows = _rows, .cols = _cols, .data = data };
+        }
+
         pub fn deinit(self: *Self) void {
             self.alloc.free(self.data);
             self.* = undefined;
@@ -1804,6 +1866,168 @@ test "shrink: OOM does not leak or corrupt the matrix" {
             // A failed shrink must leave the matrix untouched
             try std.testing.expect(M.rows == 3 and M.cols == 3);
             try std.testing.expect(M.atUnsafe(0, 0) == 1.0);
+        }
+    }
+}
+
+test "initFromRows: tuple literal, array input, complex with bare reals" {
+    const alloc = std.testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    // Tuple-of-tuples literal (the common case)
+    var A = try Mat.initFromRows(alloc, .{
+        .{ 2.0, 1.0 },
+        .{ 1.0, 2.0 },
+    });
+    defer A.deinit();
+    try std.testing.expect(A.rows == 2 and A.cols == 2);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), A.atUnsafe(0, 0), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), A.atUnsafe(1, 0), 1e-15);
+
+    // Non-square
+    var B = try Mat.initFromRows(alloc, .{
+        .{ 1.0, 2.0, 3.0 },
+        .{ 4.0, 5.0, 6.0 },
+    });
+    defer B.deinit();
+    try std.testing.expect(B.rows == 2 and B.cols == 3);
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), B.atUnsafe(1, 2), 1e-15);
+
+    // Array-of-arrays input
+    const arr = [2][2]f32{ .{ 1.0, 0.0 }, .{ 0.0, 1.0 } };
+    var C = try Mat_32.initFromRows(alloc, arr);
+    defer C.deinit();
+    try std.testing.expect(C.atUnsafe(0, 0) == 1.0 and C.atUnsafe(0, 1) == 0.0);
+
+    // Complex: mix of Cx values and bare reals
+    var Z = try CMat.initFromRows(alloc, .{
+        .{ 1.0, Cx.init(0.0, 1.0) },
+        .{ Cx.init(0.0, -1.0), 2.0 },
+    });
+    defer Z.deinit();
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 0), Cx.init(1.0, 0.0)));
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 1), Cx.init(0.0, 1.0)));
+    try std.testing.expect(sclr.eql(Z.atUnsafe(1, 1), Cx.init(2.0, 0.0)));
+}
+
+test "initFromRows: 1x1, row vector, column vector shapes" {
+    const alloc = std.testing.allocator;
+
+    var S = try Mat.initFromRows(alloc, .{.{42.0}});
+    defer S.deinit();
+    try std.testing.expect(S.rows == 1 and S.cols == 1);
+    try std.testing.expectApproxEqAbs(@as(f64, 42.0), S.atUnsafe(0, 0), 1e-15);
+
+    // 1 x n
+    var R = try Mat.initFromRows(alloc, .{
+        .{ 1.0, 2.0, 3.0, 4.0 },
+    });
+    defer R.deinit();
+    try std.testing.expect(R.rows == 1 and R.cols == 4);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), R.atUnsafe(0, 3), 1e-15);
+
+    // n x 1
+    var C = try Mat.initFromRows(alloc, .{
+        .{1.0},
+        .{2.0},
+        .{3.0},
+    });
+    defer C.deinit();
+    try std.testing.expect(C.rows == 3 and C.cols == 1);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), C.atUnsafe(2, 0), 1e-15);
+}
+
+test "initFromRows: integer matrix and comptime_int coercion" {
+    const alloc = std.testing.allocator;
+
+    var M = try Matrix(i64).initFromRows(alloc, .{
+        .{ 1, -2 },
+        .{ 3, 4 },
+    });
+    defer M.deinit();
+    try std.testing.expect(M.atUnsafe(0, 1) == -2);
+    try std.testing.expect(M.atUnsafe(1, 1) == 4);
+
+    // comptime_int literals into a float matrix
+    var F = try Mat.initFromRows(alloc, .{
+        .{ 1, 2 },
+        .{ 3, 4 },
+    });
+    defer F.deinit();
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), F.atUnsafe(1, 0), 1e-15);
+}
+
+test "initFromRows: mixed row kinds (tuple of arrays, runtime values)" {
+    const alloc = std.testing.allocator;
+
+    // Rows given as typed arrays inside a tuple
+    const r0 = [_]f64{ 1.0, 2.0 };
+    const r1 = [_]f64{ 3.0, 4.0 };
+    var M = try Mat.initFromRows(alloc, .{ r0, r1 });
+    defer M.deinit();
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), M.atUnsafe(0, 1), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), M.atUnsafe(1, 0), 1e-15);
+
+    // Runtime (non-comptime) element values
+    var x: f64 = 0.0;
+    for (0..3) |k| x += @floatFromInt(k + 1); // x = 6.0, opaque to comptime
+    var N = try Mat.initFromRows(alloc, .{
+        .{ x, 2.0 * x },
+    });
+    defer N.deinit();
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), N.atUnsafe(0, 0), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 12.0), N.atUnsafe(0, 1), 1e-15);
+}
+
+test "initFromRows: matches setRow-built matrix" {
+    const alloc = std.testing.allocator;
+
+    var A = try Mat.initFromRows(alloc, .{
+        .{ 2.0, 1.0, 0.0 },
+        .{ 1.0, 2.0, 1.0 },
+    });
+    defer A.deinit();
+
+    var B = try Mat.initZero(alloc, 2, 3);
+    defer B.deinit();
+    try B.setRow(0, [_]f64{ 2.0, 1.0, 0.0 });
+    try B.setRow(1, [_]f64{ 1.0, 2.0, 1.0 });
+
+    for (0..2) |i| {
+        for (0..3) |j| {
+            try std.testing.expectApproxEqAbs(B.atUnsafe(i, j), A.atUnsafe(i, j), 1e-15);
+        }
+    }
+}
+
+test "initFromRows: complex f32 with bare reals" {
+    const alloc = std.testing.allocator;
+    const Cx32 = std.math.Complex(f32);
+
+    var Z = try CMat_32.initFromRows(alloc, .{
+        .{ 1.0, Cx32.init(0.0, 1.0) },
+        .{ 0.0, 2.0 },
+    });
+    defer Z.deinit();
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 0), Cx32.init(1.0, 0.0)));
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 1), Cx32.init(0.0, 1.0)));
+    try std.testing.expect(sclr.eql(Z.atUnsafe(1, 0), Cx32.init(0.0, 0.0)));
+}
+
+test "initFromRows: OOM does not leak" {
+    for (0..4) |fail_index| {
+        var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const alloc = fa.allocator();
+
+        const r = Mat.initFromRows(alloc, .{
+            .{ 1.0, 2.0 },
+            .{ 3.0, 4.0 },
+        });
+        if (r) |m_val| {
+            var m = m_val;
+            m.deinit();
+        } else |e| {
+            try std.testing.expect(e == error.OutOfMemory);
         }
     }
 }
