@@ -153,6 +153,13 @@ pub fn isZeroApprox(a: anytype, tol: Real(@TypeOf(a))) bool {
     return abs(a) <= tol;
 }
 
+/// Throws a compile error if the type is not float
+pub fn ComplexOf(comptime T: type) type {
+    if (isComplex(T)) return T;
+    if (@typeInfo(T) == .float) return std.math.Complex(T);
+    @compileError("SCALAR| ComplexOf: expected a float or Complex type, got: " ++ @typeName(T));
+}
+
 // ---------- tests ----------
 
 const C = std.math.Complex(f64);
@@ -213,4 +220,12 @@ test "Real type resolution" {
     try expect(Real(C) == f64);
     try expect(isComplex(C));
     try expect(!isComplex(f64));
+}
+
+test "ComplexOf / Real round-trip" {
+    const Cx = std.math.Complex(f64);
+    try std.testing.expect(ComplexOf(f64) == Cx);
+    try std.testing.expect(ComplexOf(Cx) == Cx);
+    try std.testing.expect(ComplexOf(f32) == std.math.Complex(f32));
+    try std.testing.expect(Real(ComplexOf(f64)) == f64);
 }

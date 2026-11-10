@@ -699,6 +699,19 @@ pub fn Matrix(comptime T: type) type {
             return tr;
         }
 
+        /// Real -> complex promotion: each entry x becomes x + 0i.
+        /// For an already-complex matrix this is just a clone.
+        /// Caller owns the result.
+        pub fn toComplex(self: Self) std.mem.Allocator.Error!Matrix(sclr.ComplexOf(T)) {
+            if (comptime sclr.isComplex(T)) return self.clone();
+
+            const C = sclr.ComplexOf(T);
+            const data = try self.alloc.alloc(C, self.data.len);
+            for (self.data, data) |x, *z| z.* = sclr.fromReal(C, x);
+
+            return .{ .alloc = self.alloc, .rows = self.rows, .cols = self.cols, .data = data };
+        }
+
         /// Check bounds. Throws an IndexOutOfBounds on failure.
         fn boundsCheck(self: Self, row: usize, col: usize) MatError!void {
             if (row >= self.rows) return MatError.IndexOutOfBounds;
@@ -2112,8 +2125,6 @@ test "map: transform by value (f64, int, complex)" {
     try std.testing.expectApproxEqAbs(@as(f64, -4.0), A.atUnsafe(0, 1), 1e-15);
     try std.testing.expectApproxEqAbs(@as(f64, 8.0), A.atUnsafe(1, 1), 1e-15);
 
-    A.map(std.math.sin());
-
     var M = try Matrix(i64).initFromRows(alloc, .{
         .{ -3, 2 },
     });
@@ -2128,4 +2139,114 @@ test "map: transform by value (f64, int, complex)" {
     Z.map(fns.conj);
     try std.testing.expect(sclr.eql(Z.atUnsafe(0, 0), Cx.init(1.0, -2.0)));
     try std.testing.expect(sclr.eql(Z.atUnsafe(0, 1), Cx.init(0.0, 1.0)));
+}
+
+test "toComplex: real -> complex keeps shape, im = 0" {
+    const alloc = std.testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    var A = try Mat.initFromRows(alloc, .{
+        .{ 1.0, -2.0, 3.0 },
+        .{ 4.0, 5.0, -6.5 },
+    });
+    defer A.deinit();
+
+    var Z = try A.toComplex();
+    defer Z.deinit();
+
+    try std.testing.expect(@TypeOf(Z) == CMat);
+    try std.testing.expect(Z.rows == 2 and Z.cols == 3);
+    for (0..A.rows) |i| {
+        for (0..A.cols) |j| {
+            try std.testing.expect(sclr.eql(Z.atUnsafe(i, j), Cx.init(A.atUnsafe(i, j), 0.0)));
+        }
+    }
+}
+
+test "toComplex: f32 -> Complex(f32)" {
+    const alloc = std.testing.allocator;
+    const Cx32 = std.math.Complex(f32);
+
+    var A = try Mat_32.initFromRows(alloc, .{.{ 1.5, -0.25 }});
+    defer A.deinit();
+
+    var Z = try A.toComplex();
+    defer Z.deinit();
+
+    try std.testing.expect(@TypeOf(Z) == CMat_32);
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 0), Cx32.init(1.5, 0.0)));
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 1), Cx32.init(-0.25, 0.0)));
+}
+
+test "toComplex: complex input is an independent clone" {
+    const alloc = std.testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    var Z = try CMat.initFromRows(alloc, .{
+        .{ Cx.init(1.0, 2.0), Cx.init(0.0, -1.0) },
+    });
+    defer Z.deinit();
+
+    var W = try Z.toComplex();
+    defer W.deinit();
+
+    try std.testing.expect(@TypeOf(W) == CMat);
+    try std.testing.expect(W.data.ptr != Z.data.ptr);
+    try std.testing.expect(sclr.eql(W.atUnsafe(0, 0), Cx.init(1.0, 2.0)));
+
+    // Editing the copy leaves the original alone
+    try W.set(0, 0, Cx.init(9.0, 9.0));
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 0), Cx.init(1.0, 2.0)));
+}
+
+test "toComplex: result is editable and independent of the source, even through const" {
+    const alloc = std.testing.allocator;
+    const Cx = std.math.Complex(f64);
+
+    // Both bound as const: methods take `self: Self` by value, and `data` is
+    // a []T slice, so writes go through the slice regardless of the binding.
+    const A = try Mat.initFromRows(alloc, .{
+        .{ 1.0, 2.0 },
+        .{ 3.0, 4.0 },
+    });
+    defer {
+        var a = A; // deinit needs *Self, so free through a var copy
+        a.deinit();
+    }
+
+    const Z = try A.toComplex();
+    defer {
+        var z = Z;
+        z.deinit();
+    }
+
+    // Edit the complex copy: set, setAll-style map, and raw data write
+    try Z.set(0, 1, Cx.init(0.0, 7.0));
+    Z.data[3] = Cx.init(-1.0, -1.0); // (1, 1)
+
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 1), Cx.init(0.0, 7.0)));
+    try std.testing.expect(sclr.eql(Z.atUnsafe(1, 1), Cx.init(-1.0, -1.0)));
+
+    // Source untouched
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), A.atUnsafe(0, 1), 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), A.atUnsafe(1, 1), 1e-15);
+
+    // Edit the source after conversion: copy must not follow
+    try A.set(0, 0, 100.0);
+    try std.testing.expect(sclr.eql(Z.atUnsafe(0, 0), Cx.init(1.0, 0.0)));
+}
+
+test "toComplex: OOM does not leak" {
+    var A = try Mat.initFromRows(std.testing.allocator, .{
+        .{ 1.0, 2.0 },
+        .{ 3.0, 4.0 },
+    });
+    defer A.deinit();
+
+    var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const saved = A.alloc;
+    A.alloc = fa.allocator(); // toComplex allocates with self.alloc
+    defer A.alloc = saved;
+
+    try std.testing.expectError(error.OutOfMemory, A.toComplex());
 }
